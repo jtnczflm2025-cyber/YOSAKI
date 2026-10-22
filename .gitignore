@@ -1,0 +1,16 @@
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+frontend/src/App.vue.js
+frontend/src/main.js
+.venv/
+__pycache__/
+data/*
+!data/.gitkeep
+.env
+# Python runtime
+.venv/
+# Production secrets
+.env.production
+*.ybackup
