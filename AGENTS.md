@@ -79,7 +79,7 @@
 
 ### 文件与工作区注意事项
 
-- 当前目录在本次检查时**不是 Git 仓库**；不要假设可以使用 `git status`、分支、提交或回滚命令。
+- 当前目录已初始化为 Git 仓库，`main` 跟踪 `origin/main`；推送前仍要检查暂存清单，确保运行数据与密钥未入库。
 - `tests/` 提供隔离后端验收测试，根级 `npm run test:backend` 可运行；`backend/__pycache__/` 下的旧字节码不是测试源码。
 - `node_modules/`、`.venv/`、`__pycache__/`、`frontend/dist/`、`frontend/tsconfig.tsbuildinfo` 是依赖或生成物，应保持忽略。
 - `data/yosaki.sqlite3`、`data/.secret_key`、`.env.production`、API Key、MCP 密钥、session 和备份密码都属于敏感材料；不要提交、复制到日志或写入前端存储。
@@ -364,3 +364,7 @@ Test-Path .git
 - `YOSAKI_DATA_DIR` isolates the database and Fernet key for local tests. `npm run test:backend` runs auth, backup, demo chat, mock model and MCP tool-loop checks without touching project data.
 - Local acceptance exposed a missing MCP response parser and tool policy update route; both are now implemented. Real provider/MCP, device, Docker and VPS acceptance remain pending.
 - Isolated browser verification covered MCP connect, refresh and enable. The temporary services and database were removed. On this run, `npm run test:backend` (3 tests), `npm run build`, Python compilation and isolated `/health` passed; SHA-256 hashes of the project SQLite database and `.secret_key` matched before and after testing.
+
+## 17. Repository note — 2026-10-23
+
+- The local directory is now a Git checkout tracking the private GitHub repository `jtnczflm2025-cyber/YOSAKI` on `main`. The initial project upload excludes SQLite databases, `.secret_key`, generated frontend JavaScript, dependencies, build output, and production environment secrets.
