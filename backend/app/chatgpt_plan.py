@@ -25,6 +25,7 @@ AUTH_BASE = "https://auth.openai.com"
 API_BASE = "https://api.openai.com/v1"
 RESOURCE = "https://api.openai.com/v1"
 SCOPES = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
+AUTH_ATTEMPT_TTL_SECONDS = 3600
 router = APIRouter(prefix="/api/chatgpt")
 store_lock = threading.RLock()
 refresh_lock = asyncio.Lock()
@@ -178,7 +179,9 @@ async def _callback(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) 
         if valid_state and attempt is _attempt:
             _attempt = None
             attempt["server"].close()
-        body = f"<!doctype html><meta charset='utf-8'><title>YOSAKI</title><p>{message}</p>".encode()
+        body = ("<!doctype html><meta charset='utf-8'><title>YOSAKI</title>"
+                "<script>history.replaceState(null,'','/auth/callback')</script>"
+                f"<p>{message}</p>").encode()
         writer.write(f"HTTP/1.1 {status} {'OK' if status == 200 else 'Bad Request'}\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)
         await writer.drain()
         writer.close()
@@ -291,7 +294,7 @@ async def start(request: Request):
     _last_error = ""
     async def expire():
         global _attempt
-        await asyncio.sleep(600)
+        await asyncio.sleep(AUTH_ATTEMPT_TTL_SECONDS)
         if _attempt and _attempt.get("state") == state:
             _attempt["server"].close()
             _attempt = None

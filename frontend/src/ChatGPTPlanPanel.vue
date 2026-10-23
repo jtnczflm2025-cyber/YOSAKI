@@ -31,7 +31,7 @@ async function begin(){
   try{
     const result=await request<{authorization_url:string}>('/api/chatgpt/start','POST')
     authorizationUrl.value=result.authorization_url
-    feedback.value='请点击下方链接，在浏览器中完成授权；完成后会自动刷新状态。'
+    feedback.value='请点击下方链接，在 60 分钟内完成浏览器授权；完成后会自动刷新状态。'
     await refresh()
   }catch(error){feedback.value=error instanceof Error?error.message:'无法启动授权'}
   finally{busy.value=false}

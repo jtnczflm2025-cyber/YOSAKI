@@ -431,6 +431,7 @@ class LocalAcceptance(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(invalid.status_code,400)
                 authorized=await browser.get(callback,params={"state":params["state"],"code":"mock-code","client_id":"oaiapp_mock"})
                 self.assertEqual(authorized.status_code,200,authorized.text)
+                self.assertIn("history.replaceState",authorized.text)
             status=(await self.client.get("/api/chatgpt/status")).json()
             self.assertTrue(status["connected"] and status["plan_allowed"])
             self.assertNotIn("mock-access",json.dumps(status))
