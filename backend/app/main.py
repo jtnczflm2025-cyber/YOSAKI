@@ -181,13 +181,14 @@ class ModelProfileInput(BaseModel):
     base_url: str = Field(min_length=1, max_length=500)
     api_key: str | None = None
     model_name: str = Field(min_length=1, max_length=160)
-    protocol: str = "openai_compatible"
+    protocol: Literal["openai_compatible","openai_responses","chatgpt_plan"] = "openai_compatible"
     temperature: float = Field(default=0.8, ge=0, le=2)
     top_p: float = Field(default=1, gt=0, le=1)
     max_tokens: int = Field(default=2048, ge=1, le=128000)
     context_limit: int = Field(default=32768, ge=256, le=2000000)
     supports_streaming: bool = True
     enabled: bool = True
+    reasoning_effort: Literal["low","medium","high"] | None = None
 
 
 def now() -> str:
@@ -525,6 +526,30 @@ def init_db() -> None:
                 plugin_name TEXT,
                 display_name TEXT
             );
+            CREATE TABLE IF NOT EXISTS imported_archives (
+                digest TEXT PRIMARY KEY,
+                conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                imported_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS backup_plan (
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                enabled INTEGER NOT NULL DEFAULT 0,
+                frequency TEXT NOT NULL DEFAULT 'daily',
+                hour INTEGER NOT NULL DEFAULT 3,
+                minute INTEGER NOT NULL DEFAULT 0,
+                weekday INTEGER NOT NULL DEFAULT 0,
+                keep INTEGER NOT NULL DEFAULT 7,
+                local_dir TEXT NOT NULL DEFAULT '',
+                github_repo TEXT NOT NULL DEFAULT '',
+                last_run_at TEXT,
+                next_run_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS backup_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at TEXT NOT NULL,
+                local_status TEXT NOT NULL,
+                github_status TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS prompt_blocks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -546,9 +571,18 @@ def init_db() -> None:
         if "protocol_version" not in mcp_server_columns:
             db.execute("ALTER TABLE mcp_servers ADD COLUMN protocol_version TEXT NOT NULL DEFAULT '2025-11-25'")
         message_columns = {row[1] for row in db.execute("PRAGMA table_info(messages)").fetchall()}
-        for column, sql_type in (("tool_calls_json", "TEXT"), ("tool_call_id", "TEXT"), ("tool_name", "TEXT"), ("tool_batch_status", "TEXT")):
+        model_columns={row[1] for row in db.execute("PRAGMA table_info(model_profiles)").fetchall()}
+        if "reasoning_effort" not in model_columns:
+            db.execute("ALTER TABLE model_profiles ADD COLUMN reasoning_effort TEXT")
+        for column, sql_type in (("tool_calls_json", "TEXT"), ("tool_call_id", "TEXT"), ("tool_name", "TEXT"), ("tool_batch_status", "TEXT"), ("reasoning_content", "TEXT"), ("monologue_content", "TEXT"), ("reasoning_source", "TEXT"), ("generation_status", "TEXT"), ("usage_json", "TEXT"), ("provider_state_json", "TEXT"), ("imported_tool_runs_json", "TEXT")):
             if column not in message_columns:
                 db.execute(f"ALTER TABLE messages ADD COLUMN {column} {sql_type}")
+        context_columns = {row[1] for row in db.execute("PRAGMA table_info(context_settings)").fetchall()}
+        for column, sql_type in (("window_mode", "TEXT NOT NULL DEFAULT 'legacy'"), ("window_size", "INTEGER NOT NULL DEFAULT 50"), ("window_keep", "INTEGER NOT NULL DEFAULT 40"), ("reasoning_prompt", "TEXT NOT NULL DEFAULT ''"), ("monologue_enabled", "INTEGER NOT NULL DEFAULT 0"), ("monologue_prompt", "TEXT NOT NULL DEFAULT '描写角色此刻的内心独白，不描述模型推理过程。'")):
+            if column not in context_columns:
+                db.execute(f"ALTER TABLE context_settings ADD COLUMN {column} {sql_type}")
+        # Existing characters without a settings row retain the legacy message limit.
+        db.execute("INSERT INTO context_settings(character_id,history_limit,memory_enabled) SELECT c.id,100,1 FROM characters c WHERE NOT EXISTS (SELECT 1 FROM context_settings s WHERE s.character_id=c.id)")
         tool_run_columns = {row[1] for row in db.execute("PRAGMA table_info(tool_runs)").fetchall()}
         for column, sql_type in (("conversation_id", "INTEGER"), ("assistant_message_id", "INTEGER"), ("provider_call_id", "TEXT"), ("model_profile_id", "INTEGER"), ("plugin_tool_id", "INTEGER"), ("plugin_name", "TEXT"), ("display_name", "TEXT")):
             if column not in tool_run_columns:
@@ -571,6 +605,7 @@ def init_db() -> None:
                 ),
             )
             character_id = cursor.lastrowid
+            db.execute("INSERT INTO context_settings(character_id,history_limit,memory_enabled,window_mode) VALUES(?,100,1,'strict')",(character_id,))
             db.executemany(
                 "INSERT INTO prompt_blocks(character_id, name, content, injection_position, order_index) VALUES (?, ?, ?, ?, ?)",
                 [
@@ -817,8 +852,18 @@ async def import_backup(confirm_replace: bool = Form(False), passphrase: str = F
         try:
             if check.execute("PRAGMA integrity_check").fetchone()[0]!="ok": raise HTTPException(422,"恢复前完整性检查失败")
         finally: check.close()
+        # Preserve an encrypted rollback point before replacing the workspace.
+        safety=build_encrypted_backup(passphrase)
+        safety_path=DATA / f"pre-restore-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{secrets.token_hex(4)}.ybackup"
+        with safety_path.open("xb") as rollback:
+            rollback.write(safety)
+            rollback.flush()
+            os.fsync(rollback.fileno())
         with DB_LOCK:
             os.replace(temp_name,DB)
+        init_db()
+        with connect() as restored_db:
+            restored_db.execute("UPDATE backup_plan SET enabled=0,next_run_at=NULL WHERE id=1") if restored_db.execute("SELECT name FROM sqlite_master WHERE name='backup_plan'").fetchone() else None
     finally:
         if os.path.exists(temp_name): os.unlink(temp_name)
     return {"ok":True,"message":"备份已恢复；登录会话已清除，模型与 MCP 密钥未包含，请重新登录并配置密钥。","secrets_included":False,"exported_at":manifest.get("exported_at")}
@@ -844,6 +889,7 @@ def create_character(payload: CharacterInput) -> dict[str, Any]:
             "INSERT INTO characters(name, subtitle, mood, system_prompt, greeting, enabled, default_model_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (payload.name, payload.subtitle, payload.mood, payload.system_prompt, payload.greeting, payload.enabled, payload.default_model_id, stamp, stamp),
         )
+        db.execute("INSERT INTO context_settings(character_id,history_limit,memory_enabled,window_mode) VALUES(?,100,1,'strict')",(cursor.lastrowid,))
         row = db.execute("SELECT * FROM characters WHERE id = ?", (cursor.lastrowid,)).fetchone()
     return row_dict(row)
 
@@ -869,6 +915,7 @@ def import_character_card(payload: CharacterCardImportInput):
     with connect() as db:
         cursor=db.execute("INSERT INTO characters(name,subtitle,mood,system_prompt,greeting,enabled,default_model_id,created_at,updated_at) VALUES(?,?,?,?,?,?,NULL,?,?)",(character.name,character.subtitle,character.mood,character.system_prompt,character.greeting,character.enabled,stamp,stamp))
         character_id=cursor.lastrowid
+        db.execute("INSERT INTO context_settings(character_id,history_limit,memory_enabled,window_mode) VALUES(?,100,1,'strict')",(character_id,))
         for block in payload.prompt_blocks:
             db.execute("INSERT INTO prompt_blocks(character_id,name,content,injection_position,order_index,enabled) VALUES(?,?,?,?,?,?)",(character_id,block.name,block.content,block.injection_position,block.order_index,block.enabled))
         result=db.execute("SELECT * FROM characters WHERE id=?",(character_id,)).fetchone()
@@ -920,6 +967,7 @@ def duplicate_character(character_id: int):
         stamp=now()
         cursor=db.execute("INSERT INTO characters(name,subtitle,mood,system_prompt,greeting,enabled,default_model_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", (f"{row['name']} 副本", row["subtitle"], row["mood"], row["system_prompt"], row["greeting"], row["enabled"], row["default_model_id"],stamp,stamp))
         new_id=cursor.lastrowid
+        db.execute("INSERT INTO context_settings(character_id,history_limit,memory_enabled,window_mode) VALUES(?,100,1,'strict')",(new_id,))
         for block in db.execute("SELECT * FROM prompt_blocks WHERE character_id=? ORDER BY order_index,id",(character_id,)).fetchall():
             db.execute("INSERT INTO prompt_blocks(character_id,name,content,injection_position,order_index,enabled) VALUES(?,?,?,?,?,?)", (new_id,block["name"],block["content"],block["injection_position"],block["order_index"],block["enabled"]))
         result=dict(db.execute("SELECT * FROM characters WHERE id=?",(new_id,)).fetchone())
@@ -1006,22 +1054,32 @@ def list_models() -> list[dict[str, Any]]:
 
 @app.post("/api/models", status_code=201)
 def create_model(payload: ModelProfileInput) -> dict[str, Any]:
+    if payload.protocol=="chatgpt_plan" and payload.api_key:
+        raise HTTPException(422,"ChatGPT 套餐模型不使用 API Key")
+    if payload.protocol=="chatgpt_plan":
+        payload.base_url="https://api.openai.com/v1"
+        payload.provider_name="ChatGPT Plan"
     stamp = now()
     with connect() as db:
-        cursor = db.execute("INSERT INTO model_profiles(name, provider_name, base_url, api_key_encrypted, model_name, protocol, temperature, top_p, max_tokens, context_limit, supports_streaming, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (payload.name, payload.provider_name, payload.base_url, encrypt_secret(payload.api_key) if payload.api_key else None, payload.model_name, payload.protocol, payload.temperature, payload.top_p, payload.max_tokens, payload.context_limit, payload.supports_streaming, payload.enabled, stamp, stamp))
+        cursor = db.execute("INSERT INTO model_profiles(name, provider_name, base_url, api_key_encrypted, model_name, protocol, temperature, top_p, max_tokens, context_limit, supports_streaming, enabled, created_at, updated_at,reasoning_effort) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?)", (payload.name, payload.provider_name, payload.base_url, encrypt_secret(payload.api_key) if payload.api_key else None, payload.model_name, payload.protocol, payload.temperature, payload.top_p, payload.max_tokens, payload.context_limit, payload.supports_streaming, payload.enabled, stamp, stamp,payload.reasoning_effort))
         row = db.execute("SELECT * FROM model_profiles WHERE id = ?", (cursor.lastrowid,)).fetchone()
     return safe_model(row)
 
 
 @app.patch("/api/models/{model_id}")
 def update_model(model_id: int, payload: ModelProfileInput) -> dict[str, Any]:
+    if payload.protocol=="chatgpt_plan" and payload.api_key:
+        raise HTTPException(422,"ChatGPT 套餐模型不使用 API Key")
+    if payload.protocol=="chatgpt_plan":
+        payload.base_url="https://api.openai.com/v1"
+        payload.provider_name="ChatGPT Plan"
     stamp = now()
     with connect() as db:
         old = db.execute("SELECT * FROM model_profiles WHERE id = ?", (model_id,)).fetchone()
         if old is None:
             raise HTTPException(status_code=404, detail="模型配置不存在")
-        encrypted = encrypt_secret(payload.api_key) if payload.api_key else old["api_key_encrypted"]
-        db.execute("UPDATE model_profiles SET name=?, provider_name=?, base_url=?, api_key_encrypted=?, model_name=?, protocol=?, temperature=?, top_p=?, max_tokens=?, context_limit=?, supports_streaming=?, enabled=?, updated_at=? WHERE id=?", (payload.name, payload.provider_name, payload.base_url, encrypted, payload.model_name, payload.protocol, payload.temperature, payload.top_p, payload.max_tokens, payload.context_limit, payload.supports_streaming, payload.enabled, stamp, model_id))
+        encrypted = None if payload.protocol=="chatgpt_plan" else encrypt_secret(payload.api_key) if payload.api_key else old["api_key_encrypted"]
+        db.execute("UPDATE model_profiles SET name=?, provider_name=?, base_url=?, api_key_encrypted=?, model_name=?, protocol=?, temperature=?, top_p=?, max_tokens=?, context_limit=?, supports_streaming=?, enabled=?, updated_at=?,reasoning_effort=? WHERE id=?", (payload.name, payload.provider_name, payload.base_url, encrypted, payload.model_name, payload.protocol, payload.temperature, payload.top_p, payload.max_tokens, payload.context_limit, payload.supports_streaming, payload.enabled, stamp,payload.reasoning_effort, model_id))
         row = db.execute("SELECT * FROM model_profiles WHERE id = ?", (model_id,)).fetchone()
     return safe_model(row)
 
@@ -1036,9 +1094,16 @@ def delete_model(model_id: int) -> Response:
 
 
 async def provider_request(profile: sqlite3.Row, messages: list[dict[str, str]], stream: bool) -> httpx.Response:
-    payload = {"model": profile["model_name"], "messages": messages, "temperature": profile["temperature"], "top_p": profile["top_p"], "max_tokens": profile["max_tokens"], "stream": stream}
+    if profile["protocol"]=="openai_responses":
+        from . import responses_adapter
+        payload=responses_adapter.payload(profile,messages,[],stream)
+        url=responses_adapter.endpoint(profile["base_url"])
+    else:
+        payload = {"model": profile["model_name"], "messages": messages, "temperature": profile["temperature"], "top_p": profile["top_p"], "max_tokens": profile["max_tokens"], "stream": stream}
+        if profile["reasoning_effort"]: payload["reasoning_effort"]=profile["reasoning_effort"]
+        url=model_url(profile["base_url"])
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
-        return await client.post(model_url(profile["base_url"]), headers=auth_headers(profile), json=payload)
+        return await client.post(url, headers=auth_headers(profile), json=payload)
 
 
 @app.post("/api/models/{model_id}/test")
@@ -1047,6 +1112,26 @@ async def test_model(model_id: int) -> dict[str, Any]:
         profile = db.execute("SELECT * FROM model_profiles WHERE id = ? AND enabled = 1", (model_id,)).fetchone()
     if profile is None:
         raise HTTPException(status_code=404, detail="模型配置不存在或已停用")
+    if profile["protocol"]=="chatgpt_plan":
+        from . import chatgpt_plan, responses_adapter
+        token=await chatgpt_plan.access_token()
+        state=responses_adapter.StreamState()
+        chunks=[]
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(45.0,connect=10.0)) as client:
+                async with client.stream("POST",f"{chatgpt_plan.API_BASE}/responses",headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"},json=chatgpt_plan.payload(profile,[{"role":"user","content":"Reply with OK only."}],[])) as response:
+                    if response.status_code>=400:
+                        raise HTTPException(502,f"ChatGPT 套餐请求返回 HTTP {response.status_code}")
+                    async for line in response.aiter_lines():
+                        if line.startswith("data:"):
+                            try: event=json.loads(line[5:].strip())
+                            except json.JSONDecodeError: continue
+                            if event.get("type")=="response.failed": raise HTTPException(502,chatgpt_plan.error_message(event))
+                            chunks.append(state.normalize(event)["choices"][0]["delta"].get("content", ""))
+        except httpx.HTTPError as exc:
+            raise HTTPException(502,"ChatGPT 套餐连接测试失败") from exc
+        if not state.completed: raise HTTPException(502,"ChatGPT 套餐测试流未正常完成")
+        return {"ok":True,"model":profile["model_name"],"reply_preview":"".join(chunks)[:80]}
     try:
         response = await provider_request(profile, [{"role": "user", "content": "Reply with OK only."}], False)
     except httpx.HTTPError as exc:
@@ -1054,7 +1139,11 @@ async def test_model(model_id: int) -> dict[str, Any]:
     if response.status_code >= 400:
         raise HTTPException(status_code=502, detail=f"模型服务返回 HTTP {response.status_code}：{response.text[:500]}")
     body = response.json()
-    reply = body.get("choices", [{}])[0].get("message", {}).get("content", "")
+    if profile["protocol"]=="openai_responses":
+        from . import responses_adapter
+        reply=responses_adapter.preview_text(body)
+    else:
+        reply = body.get("choices", [{}])[0].get("message", {}).get("content", "")
     return {"ok": True, "model": profile["model_name"], "reply_preview": reply[:80]}
 
 @app.get("/api/plugins")
@@ -1315,10 +1404,15 @@ def list_messages(conversation_id: int) -> list[dict[str, Any]]:
         output=[]
         for row in rows:
             item=row_dict(row)
+            item.pop("provider_state_json",None)
             if row["tool_calls_json"]:
                 runs=db.execute("SELECT tr.*, mt.description, ms.name AS server_name FROM tool_runs tr LEFT JOIN mcp_tools mt ON mt.server_id=tr.server_id AND mt.name=tr.tool_name LEFT JOIN mcp_servers ms ON ms.id=tr.server_id WHERE tr.assistant_message_id=? ORDER BY tr.id",(row["id"],)).fetchall()
                 item["tool_batch_run_ids"]=[r["id"] for r in runs]
                 item["tool_runs"]=[{"run_id":r["id"],"tool_name":r["display_name"] or r["tool_name"],"plugin_name":r["plugin_name"],"server_name":r["server_name"] or "MCP","description":r["description"] or "","arguments":json.loads(r["arguments"] or "{}"),"status":r["status"],"result":json.loads(r["result"]) if r["result"] else None,"error":r["error"]} for r in runs]
+            if row["generation_status"]=="imported" and row["imported_tool_runs_json"]:
+                item["tool_batch_run_ids"]=[]
+                item["tool_runs"]=json.loads(row["imported_tool_runs_json"])
+            item.pop("imported_tool_runs_json",None)
             output.append(item)
     return output
 
@@ -1336,6 +1430,30 @@ def sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def split_monologue(raw: str, enabled: bool) -> tuple[str,str,str]:
+    if not enabled: return raw,"","completed"
+    start=raw.find("<inner>")
+    if start<0: return "","","incomplete"
+    after=raw[start+7:]
+    end=after.find("</inner>")
+    if end<0: return "",after.split("<",1)[0],"incomplete"
+    inner=after[:end]
+    say=after[end+8:]
+    begin=say.find("<say>")
+    if begin<0: return "",inner,"incomplete"
+    say=say[begin+5:]
+    finish=say.find("</say>")
+    return (say[:finish] if finish>=0 else say.split("<",1)[0]),inner,("completed" if finish>=0 else "incomplete")
+
+
+def reply_events(raw: str, previous: tuple[str,str], monologue: bool):
+    spoken,inner,status=split_monologue(raw,monologue)
+    events=[]
+    if len(inner)>len(previous[1]): events.append(sse("monologue_delta",{"text":inner[len(previous[1]):]}))
+    if len(spoken)>len(previous[0]): events.append(sse("text_delta",{"text":spoken[len(previous[0]):]}))
+    return (spoken,inner),status,events
+
+
 def demo_reply(character_name: str, message: str) -> str:
     return (
         f"我听见了，{character_name}会把这句话放在心里。\n\n"
@@ -1344,7 +1462,36 @@ def demo_reply(character_name: str, message: str) -> str:
     )
 
 
-def build_messages(character, prompt_blocks, history, current=None, memories=(), summary="", history_limit=None):
+def select_history(history, settings):
+    rows=list(history)
+    mode=settings.get("window_mode", "legacy")
+    if mode == "legacy":
+        limit=settings.get("history_limit",100)
+        selected=rows[-limit:] if limit else []
+        ids={row["id"] for row in selected}
+        calls=set()
+        for row in selected:
+            if row["role"]=="tool" and row["tool_call_id"]: calls.add(row["tool_call_id"])
+            if row["role"]=="assistant" and row["tool_calls_json"]:
+                calls.update(call.get("id") for call in json.loads(row["tool_calls_json"]))
+        for row in rows:
+            if row["role"]=="tool" and row["tool_call_id"] in calls: ids.add(row["id"])
+            if row["role"]=="assistant" and row["tool_calls_json"] and any(call.get("id") in calls for call in json.loads(row["tool_calls_json"])): ids.add(row["id"])
+        return [row for row in rows if row["id"] in ids]
+    turns=[]
+    for row in rows:
+        if row["role"]=="user" or not turns: turns.append([])
+        turns[-1].append(row)
+    limit=settings.get("window_size",50)
+    if mode=="chunked" and len(turns)>limit:
+        keep=settings.get("window_keep",40)
+        step=limit-keep
+        removed=1+((len(turns)-limit-1)//step+1)*step
+        limit=len(turns)-removed
+    return [row for turn in turns[-limit:] for row in turn] if limit else []
+
+
+def build_messages(character, prompt_blocks, history, current=None, memories=(), summary="", history_limit=None, settings=None, include_provider_state=False):
     ordered = sorted((b for b in prompt_blocks if b["enabled"]), key=lambda b: (b["order_index"], b["id"]))
     def section(position):
         return [f"## {b['name']}\n{b['content']}" for b in ordered if b["injection_position"] == position]
@@ -1362,44 +1509,35 @@ def build_messages(character, prompt_blocks, history, current=None, memories=(),
     dynamic.extend(section("before_history"))
     if dynamic:
         messages.append({"role": "system", "content": "\n\n".join(dynamic)})
-    all_history=list(history)
-    selected = all_history if history_limit is None else (all_history[-history_limit:] if history_limit else [])
-    # Keep assistant tool_calls and their tool results together even when the history window starts nearby.
-    required_call_ids=set()
-    for row in selected:
-        if row["role"]=="assistant" and row["tool_calls_json"]:
-            required_call_ids.update(call.get("id") for call in json.loads(row["tool_calls_json"]) if call.get("id"))
-        elif row["role"]=="tool" and row["tool_call_id"]:
-            required_call_ids.add(row["tool_call_id"])
-    selected_ids={row["id"] for row in selected}
-    for row in all_history:
-        if row["role"]=="tool" and row["tool_call_id"] in required_call_ids:
-            selected_ids.add(row["id"])
-        elif row["role"]=="assistant" and row["tool_calls_json"] and any(call.get("id") in required_call_ids for call in json.loads(row["tool_calls_json"])):
-            selected_ids.add(row["id"])
-    selected=sorted((row for row in all_history if row["id"] in selected_ids),key=lambda row:row["id"])
+    selected=select_history(history,settings or {"window_mode":"legacy","history_limit":history_limit if history_limit is not None else len(history)})
     for row in selected:
         if row["role"] in ("user", "assistant"):
             item = {"role": row["role"], "content": row["content"] or ""}
-            if row["role"] == "assistant" and row["tool_calls_json"]:
+            if row["role"] == "assistant" and row["tool_calls_json"] and row["generation_status"]!="imported":
                 item["tool_calls"] = json.loads(row["tool_calls_json"])
+            if include_provider_state and row["role"] == "assistant" and row["provider_state_json"]:
+                item["provider_state"] = json.loads(row["provider_state_json"])
             messages.append(item)
-        elif row["role"] == "tool":
+        elif row["role"] == "tool" and row["generation_status"]!="imported":
             messages.append({"role":"tool", "tool_call_id":row["tool_call_id"], "name":row["tool_name"], "content":row["content"] or ""})
     suffix = section("after_history") + section("system_end")
     if suffix:
         messages.append({"role": "system", "content": "\n\n".join(suffix)})
     if current is not None:
         messages.append({"role": "user", "content": current})
+    if settings and settings.get("reasoning_prompt"):
+        messages[0]["content"] += "\n\n## 回答指导\n"+settings["reasoning_prompt"]
+    if settings and settings.get("monologue_enabled"):
+        messages[0]["content"] += "\n\n"+settings.get("monologue_prompt","")+"\n本轮回复严格使用 <inner>内心独白</inner><say>说出口的话</say>；内心独白只供用户查看，不是模型真实推理。"
     return messages
 
 
 def memory_context(db, character_id, conversation_id):
     settings = db.execute("SELECT * FROM context_settings WHERE character_id=?", (character_id,)).fetchone()
-    settings = dict(settings) if settings else {"history_limit": 100, "memory_enabled": True}
+    settings = dict(settings) if settings else {"history_limit": 100, "memory_enabled": True,"window_mode":"strict","window_size":50,"window_keep":40,"reasoning_prompt":"","monologue_enabled":False,"monologue_prompt":""}
     memories = db.execute("SELECT * FROM memories WHERE character_id=? AND enabled=1 AND (scope='long' OR (scope='temporary' AND conversation_id=?)) ORDER BY id", (character_id, conversation_id)).fetchall() if settings["memory_enabled"] else []
     summary = db.execute("SELECT content FROM conversation_summaries WHERE conversation_id=? AND enabled=1", (conversation_id,)).fetchone()
-    return memories, summary["content"] if summary else "", settings["history_limit"]
+    return memories, summary["content"] if summary else "", settings
 
 
 def estimate_tokens(text):
@@ -1418,6 +1556,12 @@ class MemoryInput(BaseModel):
 class ContextSettingsInput(BaseModel):
     history_limit: int = Field(default=100, ge=0, le=1000)
     memory_enabled: bool = True
+    window_mode: Literal["legacy","strict","chunked"] = "legacy"
+    window_size: int = Field(default=50, ge=1, le=1000)
+    window_keep: int = Field(default=40, ge=1, le=999)
+    reasoning_prompt: str = Field(default="", max_length=8000)
+    monologue_enabled: bool = False
+    monologue_prompt: str = Field(default="描写角色此刻的内心独白，不描述模型推理过程。", max_length=8000)
 
 
 class SummaryInput(BaseModel):
@@ -1472,7 +1616,7 @@ def delete_memory(memory_id: int):
 def get_context_settings(character_id: int):
     with connect() as db:
         row = db.execute("SELECT * FROM context_settings WHERE character_id=?", (character_id,)).fetchone()
-        return dict(row) if row else {"history_limit":100,"memory_enabled":True}
+        return dict(row) if row else {"history_limit":100,"memory_enabled":True,"window_mode":"strict","window_size":50,"window_keep":40,"reasoning_prompt":"","monologue_enabled":False,"monologue_prompt":"描写角色此刻的内心独白，不描述模型推理过程。"}
 
 
 @app.put("/api/characters/{character_id}/context-settings")
@@ -1480,7 +1624,8 @@ def save_context_settings(character_id: int, payload: ContextSettingsInput):
     with connect() as db:
         if not db.execute("SELECT 1 FROM characters WHERE id=?", (character_id,)).fetchone():
             raise HTTPException(404,"角色不存在")
-        db.execute("INSERT INTO context_settings VALUES(?,?,?) ON CONFLICT(character_id) DO UPDATE SET history_limit=excluded.history_limit,memory_enabled=excluded.memory_enabled",(character_id,payload.history_limit,payload.memory_enabled))
+        if payload.window_mode=="chunked" and payload.window_keep>=payload.window_size: raise HTTPException(422,"分段保留轮数必须小于上限")
+        db.execute("INSERT INTO context_settings(character_id,history_limit,memory_enabled,window_mode,window_size,window_keep,reasoning_prompt,monologue_enabled,monologue_prompt) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(character_id) DO UPDATE SET history_limit=excluded.history_limit,memory_enabled=excluded.memory_enabled,window_mode=excluded.window_mode,window_size=excluded.window_size,window_keep=excluded.window_keep,reasoning_prompt=excluded.reasoning_prompt,monologue_enabled=excluded.monologue_enabled,monologue_prompt=excluded.monologue_prompt",(character_id,payload.history_limit,payload.memory_enabled,payload.window_mode,payload.window_size,payload.window_keep,payload.reasoning_prompt,payload.monologue_enabled,payload.monologue_prompt))
     return payload.model_dump()
 
 
@@ -1554,13 +1699,13 @@ def context_preview(payload: PreviewInput):
         if payload.conversation_id is not None:
             if not db.execute("SELECT 1 FROM conversations WHERE id=? AND character_id=?", (payload.conversation_id, payload.character_id)).fetchone():
                 raise HTTPException(404, "对话不属于此角色")
-            history = db.execute("SELECT role, content FROM messages WHERE conversation_id=? ORDER BY id", (payload.conversation_id,)).fetchall()
+            history = db.execute("SELECT * FROM messages WHERE conversation_id=? ORDER BY id", (payload.conversation_id,)).fetchall()
         blocks = db.execute("SELECT * FROM prompt_blocks WHERE character_id=?", (payload.character_id,)).fetchall()
         memories, summary, limit = memory_context(db, payload.character_id, payload.conversation_id)
-    messages = build_messages(character, blocks, history, payload.message, memories, summary, limit)
+    messages = build_messages(character, blocks, history, payload.message, memories, summary, settings=limit)
     stable = estimate_tokens(messages[0]["content"])
     dynamic = sum(estimate_tokens(x["content"]) for x in messages[1:])
-    return {"messages": messages, "estimate": {"stable":stable,"dynamic":dynamic,"total":stable+dynamic,"method":"字符启发式估算，不含协议开销，非服务商计费值"}, "history_included":min(limit,len(history)), "history_total":len(history), "cache_status":"未提供服务商缓存数据，不推算命中率", "source": "saved", "note": "仅预览已保存配置，不调用模型、不写入聊天记录。发送前修改配置或历史会改变请求。"}
+    return {"messages": messages, "estimate": {"stable":stable,"dynamic":dynamic,"total":stable+dynamic,"method":"字符启发式估算，不含协议开销，非服务商计费值"}, "history_included":len(select_history(history,limit)), "history_total":len(history), "cache_status":"未提供服务商缓存数据，不推算命中率", "source": "saved", "note": "仅预览已保存配置，不调用模型、不写入聊天记录。发送前修改配置或历史会改变请求。"}
 
 
 @app.get("/api/chat/tool-runs")
@@ -1643,15 +1788,30 @@ async def continue_after_tool(run_id: int):
         blocks=db.execute("SELECT * FROM prompt_blocks WHERE character_id=? ORDER BY order_index,id",(conversation["character_id"],)).fetchall()
         memories,summary,limit=memory_context(db,conversation["character_id"],run["conversation_id"])
         tools,tool_map=available_model_tools(db)
-    request_messages=build_messages(character,blocks,history,None,memories,summary,limit)
-    body={"model":profile["model_name"],"messages":request_messages,"temperature":profile["temperature"],"top_p":profile["top_p"],"max_tokens":profile["max_tokens"],"stream":True}
-    if tools: body.update({"tools":tools,"tool_choice":"auto","parallel_tool_calls":False})
+    is_plan=profile["protocol"]=="chatgpt_plan"
+    is_responses=profile["protocol"] in ("openai_responses","chatgpt_plan")
+    if is_responses: from . import responses_adapter
+    if is_plan: from . import chatgpt_plan
+    request_messages=build_messages(character,blocks,history,None,memories,summary,settings=limit,include_provider_state=is_responses)
+    if is_plan:
+        body=chatgpt_plan.payload(profile,request_messages,tools)
+        url=f"{chatgpt_plan.API_BASE}/responses"
+    elif is_responses:
+        body=responses_adapter.payload(profile,request_messages,tools,True)
+        url=responses_adapter.endpoint(profile["base_url"])
+    else:
+        body={"model":profile["model_name"],"messages":request_messages,"temperature":profile["temperature"],"top_p":profile["top_p"],"max_tokens":profile["max_tokens"],"stream":True}
+        if profile["reasoning_effort"]: body["reasoning_effort"]=profile["reasoning_effort"]
+        if tools: body.update({"tools":tools,"tool_choice":"auto","parallel_tool_calls":False})
+        url=model_url(profile["base_url"])
     async def generate():
-        reply_parts=[]; calls={}
+        reply_parts=[]; calls={}; reasoning_parts=[]; visible=("",""); generation_status="completed"; usage=None
+        response_state=responses_adapter.StreamState() if is_responses else None
         yield sse("message_start",{"conversation_id":run["conversation_id"],"model":profile["model_name"],"mode":"provider","continuation":True})
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(120.0,connect=15.0)) as client:
-                async with client.stream("POST",model_url(profile["base_url"]),headers=auth_headers(profile),json=body) as response:
+                headers={"Authorization":f"Bearer {await chatgpt_plan.access_token()}","Content-Type":"application/json"} if is_plan else auth_headers(profile)
+                async with client.stream("POST",url,headers=headers,json=body) as response:
                     if response.status_code>=400:
                         detail=(await response.aread()).decode(errors="replace")[:500]
                         raise RuntimeError(f"模型服务返回 HTTP {response.status_code}: {detail}")
@@ -1661,17 +1821,29 @@ async def continue_after_tool(run_id: int):
                         if raw=="[DONE]": break
                         try: data=json.loads(raw)
                         except json.JSONDecodeError: continue
-                        choice=data.get("choices",[{}])[0]; delta=choice.get("delta",{}) or {}
+                        if response_state:
+                            if data.get("type")=="response.failed": raise RuntimeError(chatgpt_plan.error_message(data) if is_plan else "Responses 服务未完成本次回复")
+                            if data.get("type")=="response.incomplete": generation_status="incomplete"
+                            data=response_state.normalize(data)
+                        choice=(data.get("choices") or [{}])[0]; delta=choice.get("delta",{}) or {}
+                        usage=data.get("usage") or usage
+                        reason=delta.get("reasoning_content") or ""
+                        if reason: reasoning_parts.append(reason); yield sse("reasoning_delta",{"text":reason})
                         text=delta.get("content") or ""
-                        if text: reply_parts.append(text); yield sse("text_delta",{"text":text})
+                        if text:
+                            reply_parts.append(text)
+                            visible,generation_status,events=reply_events("".join(reply_parts),visible,bool(limit.get("monologue_enabled")))
+                            for event in events: yield event
                         for part in delta.get("tool_calls",[]) or []:
                             index=part.get("index",0); call=calls.setdefault(index,{"id":"","type":"function","function":{"name":"","arguments":""}})
                             if part.get("id"): call["id"]=part["id"]
                             fn=part.get("function",{}) or {}; call["function"]["name"]+=fn.get("name","") or ""; call["function"]["arguments"]+=fn.get("arguments","") or ""
+            if is_plan and not response_state.completed and generation_status!="incomplete":
+                raise RuntimeError("ChatGPT 套餐回复流未正常完成；请检查账户状态后重试")
             if calls:
                 parsed=[]
                 for _,call in sorted(calls.items()):
-                    mapped=tool_map.get(call["function"]["name"])
+                    mapped=tool_map.get(call["function"]["name"]) or (tool_map.get(call["function"]["name"].removeprefix("yosaki.")) if is_plan else None)
                     if mapped is None or not call.get("id"):
                         raise RuntimeError("模型请求了无效或未启用的工具；此调用未执行")
                     try: args=json.loads(call["function"]["arguments"] or "{}")
@@ -1679,7 +1851,7 @@ async def continue_after_tool(run_id: int):
                     if not isinstance(args,dict): raise RuntimeError("工具参数必须是 JSON 对象；此调用未执行")
                     parsed.append((call,mapped,args))
                 with connect() as db:
-                    cur=db.execute("INSERT INTO messages(conversation_id,role,content,model,tool_calls_json,tool_batch_status,created_at) VALUES(?,'assistant',?,?,?,'awaiting_confirmation',?)",(run["conversation_id"],"".join(reply_parts),profile["model_name"],json.dumps([x[0] for x in parsed],ensure_ascii=False),now()))
+                    cur=db.execute("INSERT INTO messages(conversation_id,role,content,model,tool_calls_json,tool_batch_status,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,usage_json,provider_state_json) VALUES(?,'assistant',?,?,?,'awaiting_confirmation',?,?,?,?,?,?,?)",(run["conversation_id"],visible[0],profile["model_name"],json.dumps([x[0] for x in parsed],ensure_ascii=False),now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,generation_status,json.dumps(usage) if usage else None,json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None))
                     assistant_id=cur.lastrowid; pending=[]
                     for call,mapped,args in parsed:
                         cur=db.execute("INSERT INTO tool_runs(server_id,tool_name,arguments,status,confirmed,created_at,conversation_id,assistant_message_id,provider_call_id,model_profile_id,plugin_tool_id,plugin_name,display_name) VALUES(?,?,?,'pending_confirmation',0,?,?,?,?,?,?,?,?)",(mapped["server_id"],mapped["name"],json.dumps(args,ensure_ascii=False),now(),run["conversation_id"],assistant_id,call["id"],profile["id"],mapped.get("plugin_tool_id"),mapped.get("plugin_name"),mapped.get("display_name")))
@@ -1688,16 +1860,33 @@ async def continue_after_tool(run_id: int):
                 for item in pending: yield sse("tool_waiting_confirmation",item)
                 yield sse("tool_batch_waiting",{"conversation_id":run["conversation_id"],"assistant_message_id":assistant_id,"run_ids":[x["run_id"] for x in pending]})
                 return
-            reply="".join(reply_parts)
+            reply=visible[0]
             with connect() as db:
-                db.execute("INSERT INTO messages(conversation_id,role,content,model,created_at) VALUES(?,'assistant',?,?,?)",(run["conversation_id"],reply,profile["model_name"],now()))
+                db.execute("INSERT INTO messages(conversation_id,role,content,model,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,usage_json,provider_state_json) VALUES(?,'assistant',?,?,?,?,?,?,?,?,?)",(run["conversation_id"],reply,profile["model_name"],now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,generation_status,json.dumps(usage) if usage else None,json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None))
                 db.execute("UPDATE messages SET tool_batch_status='completed' WHERE id=?",(run["assistant_message_id"],))
                 db.execute("UPDATE conversations SET updated_at=? WHERE id=?",(now(),run["conversation_id"]))
-            yield sse("message_complete",{"conversation_id":run["conversation_id"],"model":profile["model_name"]})
+            if usage: yield sse("usage",usage)
+            yield sse("message_complete",{"conversation_id":run["conversation_id"],"model":profile["model_name"],"generation_status":generation_status})
+        except asyncio.CancelledError:
+            with connect() as db:
+                db.execute("INSERT INTO messages(conversation_id,role,content,model,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,provider_state_json) VALUES(?,'assistant',?,?,?,?,?,?,?,?)",(run["conversation_id"],visible[0],profile["model_name"],now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,"stopped",json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None))
+                db.execute("UPDATE messages SET tool_batch_status='completed' WHERE id=?",(run["assistant_message_id"],))
+            raise
+        except HTTPException as exc:
+            with connect() as db: db.execute("UPDATE messages SET tool_batch_status='awaiting_confirmation' WHERE id=?",(run["assistant_message_id"],))
+            yield sse("error",{"message":str(exc.detail)[:500]})
         except Exception as exc:
             with connect() as db: db.execute("UPDATE messages SET tool_batch_status='failed' WHERE id=?",(run["assistant_message_id"],))
             yield sse("error",{"message":str(exc)[:500]})
     return StreamingResponse(generate(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
+
+
+from . import archives
+archives.install(app,connect,now)
+from . import scheduled_backup
+scheduled_backup.install(app,connect,now,build_encrypted_backup,decrypt_backup,DATA)
+from . import chatgpt_plan
+chatgpt_plan.install(app,DATA,get_fernet)
 
 
 @app.post("/api/chat/regenerate")
@@ -1754,38 +1943,77 @@ async def chat_stream(payload: ChatInput) -> StreamingResponse:
                 await asyncio.sleep(0.008); yield sse("text_delta",{"text":chunk})
             with connect() as db: db.execute("INSERT INTO messages(conversation_id,role,content,model,created_at) VALUES(?,'assistant',?,?,?)",(conversation_id,reply,used_model,now()))
             yield sse("message_complete",{"conversation_id":conversation_id,"model":used_model}); return
-        request_messages=build_messages(character,blocks,history,payload.message,memories,summary,history_limit)
-        body={"model":profile["model_name"],"messages":request_messages,"temperature":profile["temperature"],"top_p":profile["top_p"],"max_tokens":profile["max_tokens"],"stream":True}
-        if tool_defs:
-            body.update({"tools":tool_defs,"tool_choice":"auto","parallel_tool_calls":False})
+        is_plan=profile["protocol"]=="chatgpt_plan"
+        is_responses=profile["protocol"] in ("openai_responses","chatgpt_plan")
+        if is_responses: from . import responses_adapter
+        if is_plan: from . import chatgpt_plan
+        request_messages=build_messages(character,blocks,history,payload.message,memories,summary,settings=history_limit,include_provider_state=is_responses)
+        if is_plan:
+            body=chatgpt_plan.payload(profile,request_messages,tool_defs)
+            url=f"{chatgpt_plan.API_BASE}/responses"
+        elif is_responses:
+            body=responses_adapter.payload(profile,request_messages,tool_defs,True)
+            url=responses_adapter.endpoint(profile["base_url"])
+        else:
+            body={"model":profile["model_name"],"messages":request_messages,"temperature":profile["temperature"],"top_p":profile["top_p"],"max_tokens":profile["max_tokens"],"stream":True}
+            if profile["reasoning_effort"]: body["reasoning_effort"]=profile["reasoning_effort"]
+            if tool_defs: body.update({"tools":tool_defs,"tool_choice":"auto","parallel_tool_calls":False})
+            url=model_url(profile["base_url"])
         yield sse("message_start",{"conversation_id":conversation_id,"model":used_model,"mode":"provider"})
-        reply_parts=[]; calls={}; finish_reason=None
+        reply_parts=[]; calls={}; finish_reason=None; reasoning_parts=[]; visible=("",""); generation_status="completed"; usage=None
+        response_state=responses_adapter.StreamState() if is_responses else None
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(120.0,connect=15.0)) as client:
-                async with client.stream("POST",model_url(profile["base_url"]),headers=auth_headers(profile),json=body) as response:
+                headers={"Authorization":f"Bearer {await chatgpt_plan.access_token()}","Content-Type":"application/json"} if is_plan else auth_headers(profile)
+                async with client.stream("POST",url,headers=headers,json=body) as response:
                     if response.status_code>=400:
-                        detail=(await response.aread()).decode(errors="replace")[:500]; yield sse("error",{"message":f"模型服务返回 HTTP {response.status_code}：{detail}"}); return
+                        if is_plan:
+                            yield sse("error",{"message":f"ChatGPT 套餐服务返回 HTTP {response.status_code}；请检查账户权限或用量，不会自动改用付费 API"})
+                        else:
+                            detail=(await response.aread()).decode(errors="replace")[:500]; yield sse("error",{"message":f"模型服务返回 HTTP {response.status_code}：{detail}"})
+                        return
                     async for line in response.aiter_lines():
                         if not line.startswith("data:"): continue
                         raw=line[5:].strip()
                         if raw=="[DONE]": break
                         try: data=json.loads(raw)
                         except json.JSONDecodeError: continue
-                        choice=data.get("choices",[{}])[0]; delta=choice.get("delta",{}) or {}; finish_reason=choice.get("finish_reason") or finish_reason
+                        if response_state:
+                            if data.get("type")=="response.failed": raise RuntimeError(chatgpt_plan.error_message(data) if is_plan else "Responses 服务未完成本次回复")
+                            if data.get("type")=="response.incomplete": generation_status="incomplete"
+                            data=response_state.normalize(data)
+                        usage=data.get("usage") or usage
+                        choice=(data.get("choices") or [{}])[0]; delta=choice.get("delta",{}) or {}; finish_reason=choice.get("finish_reason") or finish_reason
+                        reason=delta.get("reasoning_content") or ""
+                        if reason: reasoning_parts.append(reason); yield sse("reasoning_delta",{"text":reason})
                         text=delta.get("content") or ""
-                        if text: reply_parts.append(text); yield sse("text_delta",{"text":text})
+                        if text:
+                            reply_parts.append(text)
+                            visible,generation_status,events=reply_events("".join(reply_parts),visible,bool(history_limit.get("monologue_enabled")))
+                            for event in events: yield event
                         for part in delta.get("tool_calls",[]) or []:
                             idx=part.get("index",0); call=calls.setdefault(idx,{"id":"","type":"function","function":{"name":"","arguments":""}})
                             if part.get("id"): call["id"]=part["id"]
                             fn=part.get("function",{}) or {}; call["function"]["name"]+=fn.get("name","") or ""; call["function"]["arguments"]+=fn.get("arguments","") or ""
+        except asyncio.CancelledError:
+            with connect() as db:
+                db.execute("INSERT INTO messages(conversation_id,role,content,model,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,provider_state_json) VALUES(?,'assistant',?,?,?,?,?,?,?,?)",(conversation_id,visible[0],used_model,now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,"stopped",json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None))
+            raise
         except httpx.HTTPError as exc:
             yield sse("error",{"message":f"连接模型服务失败：{exc}"}); return
-        reply="".join(reply_parts)
+        except HTTPException as exc:
+            yield sse("error",{"message":str(exc.detail)[:500]}); return
+        except RuntimeError as exc:
+            yield sse("error",{"message":str(exc)}); return
+        if is_plan and not response_state.completed and generation_status!="incomplete":
+            yield sse("error",{"message":"ChatGPT 套餐回复流未正常完成；请检查账户状态后重试"})
+            return
+        reply=visible[0]
         if calls:
             parsed_calls=[]
             for index,call in sorted(calls.items()):
                 function_name=call["function"]["name"]
-                mapped=tool_map.get(function_name)
+                mapped=tool_map.get(function_name) or (tool_map.get(function_name.removeprefix("yosaki.")) if is_plan else None)
                 if mapped is None:
                     yield sse("error",{"message":"模型请求了当前未启用的工具，已拒绝执行"}); return
                 if not call.get("id"):
@@ -1797,7 +2025,7 @@ async def chat_stream(payload: ChatInput) -> StreamingResponse:
                     yield sse("error",{"message":"工具参数必须是 JSON 对象，已拒绝执行"}); return
                 parsed_calls.append((call,mapped,args))
             with connect() as db:
-                cur=db.execute("INSERT INTO messages(conversation_id,role,content,model,tool_calls_json,tool_batch_status,created_at) VALUES(?,'assistant',?,?,?,'awaiting_confirmation',?)",(conversation_id,reply,used_model,json.dumps([x[0] for x in parsed_calls],ensure_ascii=False),now()))
+                cur=db.execute("INSERT INTO messages(conversation_id,role,content,model,tool_calls_json,tool_batch_status,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,usage_json,provider_state_json) VALUES(?,'assistant',?,?,?,'awaiting_confirmation',?,?,?,?,?,?,?)",(conversation_id,reply,used_model,json.dumps([x[0] for x in parsed_calls],ensure_ascii=False),now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,generation_status,json.dumps(usage) if usage else None,json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None))
                 assistant_id=cur.lastrowid; pending=[]
                 for call,mapped,args in parsed_calls:
                     cur=db.execute("INSERT INTO tool_runs(server_id,tool_name,arguments,status,confirmed,created_at,conversation_id,assistant_message_id,provider_call_id,model_profile_id,plugin_tool_id,plugin_name,display_name) VALUES(?,?,?,'pending_confirmation',0,?,?,?,?,?,?,?,?)",(mapped["server_id"],mapped["name"],json.dumps(args,ensure_ascii=False),now(),conversation_id,assistant_id,call["id"],profile_id,mapped.get("plugin_tool_id"),mapped.get("plugin_name"),mapped.get("display_name")))
@@ -1806,7 +2034,8 @@ async def chat_stream(payload: ChatInput) -> StreamingResponse:
             yield sse("tool_batch_waiting",{"conversation_id":conversation_id,"assistant_message_id":assistant_id,"run_ids":[x["run_id"] for x in pending]})
             return
         with connect() as db:
-            db.execute("INSERT INTO messages(conversation_id,role,content,model,created_at) VALUES(?,'assistant',?,?,?)",(conversation_id,reply,used_model,now()))
+            db.execute("INSERT INTO messages(conversation_id,role,content,model,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,usage_json,provider_state_json) VALUES(?,'assistant',?,?,?,?,?,?,?,?,?)",(conversation_id,reply,used_model,now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,generation_status,json.dumps(usage) if usage else None,json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None))
             db.execute("UPDATE conversations SET updated_at=? WHERE id=?",(now(),conversation_id))
-        yield sse("message_complete",{"conversation_id":conversation_id,"model":used_model,"finish_reason":finish_reason})
+        if usage: yield sse("usage",usage)
+        yield sse("message_complete",{"conversation_id":conversation_id,"model":used_model,"finish_reason":finish_reason,"generation_status":generation_status})
     return StreamingResponse(generate(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})

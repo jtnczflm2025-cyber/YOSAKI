@@ -359,3 +359,24 @@ MCP、插件、TTS/STT 仍然按后续阶段加入，但它们从一开始就使
 - Added an opt-in data-directory override and isolated automated tests for auth, demo chat, encrypted backup restore, mocked model streaming, MCP discovery and tool decisions.
 - Fixed two MCP integration gaps discovered by the tests: response parsing for JSON/SSE and the tool policy update route. Mocked local validation is not real provider or VPS acceptance.
 - An isolated browser check confirmed the MCP page can connect to the mock service, refresh its tool list, and enable a tool through the restored API.
+
+## 第二版进度 — 2026-10-23
+
+- 已接入旧设置兼容的严格/分段对话轮次窗口、上下文预览、兼容接口公开推理文本、Responses API 公开推理摘要与独立角色内心独白。Responses 适配器使用 API Key，通过模拟服务验证工具确认与续接；独白仅保存展示，不回传后续模型历史。
+- 已接入 JSON/Markdown/TXT 聊天档案批量 ZIP 导出、导入预览、重复文件跳过和阅读版清理选项；浏览器保存清理模板。导入按文件处理并限制单文件 8 MiB、整批 64 MiB、单文件 20000 条消息。
+- 已接入本地同步目录和私有 GitHub 专用仓库的加密备份计划。密码与 token 仅从后端环境变量读取；定时默认关闭。GitHub 短暂上传失败最多尝试三次，两个目标分别记录结果。真实 GitHub 上传、Docker 和 VPS 尚待验收。
+- ChatGPT 套餐授权仍是独立试验：当前源码仓库为 private，官方公开接入范围针对开源且本地托管的应用；目前未取得 OAuth 客户端或真实账户权限，也没有改变仓库可见性。现有 Responses 适配器使用单独 API Key，不代表 Plus 套餐可用。
+- 隔离后端 9 项测试、前端构建和本地浏览器检查已通过；浏览器实际选取示例 JSON，预览并导入，验证阅读版称呼清理预览、模型协议选项和备份设置表单。真实模型、GitHub、设备验收未完成。
+
+## 第二版验收加固 — 2026-10-23
+
+- 源码仓库经 GitHub 核对仍为 private；项目负责人选择继续保持私有。官方 ChatGPT 套餐授权文档针对开源、本地托管应用，故暂缓 OAuth 接入试验，继续使用现有 API Key 模型通道和其它本地验收。
+- 本地定时备份写入成功但清理旧份失败时，任务现记录 `retention_failed`，明确保留新备份成功这一事实；此路径补充隔离测试。真实第三方、设备、Docker 和 VPS 验收仍分别进行。
+- TXT 导入现在逐条检查整份文件的消息边界，拒绝合法消息后夹杂非法标记的文件；Markdown/TXT 正文起始的边界标记可转义后往返。隔离后端 9 项测试、前端构建、后端编译和临时服务 `/health` 均通过；当前机器未配置真实备份环境凭据，也没有 Docker。
+
+## 第二版 ChatGPT 套餐接入试验 — 2026-10-23
+
+- 项目负责人改变仓库可见性决定：授权将源码仓库公开，但暂不添加许可证。公开可见不等于满足官方“开源且本地托管”接入条件，需以真实授权结果为准。
+- 增加默认关闭的 `YOSAKI_CHATGPT_PLAN_ENABLED=1` 本机 OAuth 流程：动态客户端注册、PKCE/state/nonce、ID token 验证、加密的后端凭据、刷新与撤销。模型目录及独立 Responses 通道不使用 API Key；流式模型和 MCP 工具沿用逐次确认，不自动回退付费 API。
+- 本地模拟授权、模型、刷新、撤销、工具续接已通过隔离测试。真实 ChatGPT 账户授权、套餐额度和可见模型未测；如果授权无法取得套餐 scope 或官方判定应用不符合条件，保持试验状态并记录具体结果。
+- 仓库公开前扫描 Git 历史和待提交文件，确保真实数据库、Fernet 密钥、OAuth 文件、备份密码及服务凭据未入库。公开仓库不代表应用已可部署到公网；Docker、设备和 VPS 验收继续独立进行。

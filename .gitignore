@@ -3,11 +3,13 @@ frontend/node_modules/
 frontend/dist/
 frontend/tsconfig.tsbuildinfo
 frontend/src/App.vue.js
+frontend/src/*.vue.js
 frontend/src/main.js
 .venv/
 __pycache__/
 data/*
 !data/.gitkeep
+.chatgpt_plan*
 .env
 # Python runtime
 .venv/

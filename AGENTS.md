@@ -66,6 +66,7 @@
 │  └─ DEPLOY_VPS.md               # HTTPS、防火墙、备份、升级和回滚要求
 ├─ docs/
 │  ├─ PLAN.md                     # 产品入口、窗口模型和阶段计划
+│  ├─ CHAT_ARCHIVES.md            # 第二版聊天档案格式与示例
 │  ├─ PLUGINS.md                  # 受控插件工具包 v1 说明
 │  └─ CHARACTER_CARDS.md          # 角色卡 JSON v1 格式与导入导出边界
 ├─ plugins/                       # 当前插件相关目录，具体可执行能力仍不开放
@@ -150,7 +151,7 @@
 - **聊天**：角色/模型选择、对话历史、搜索、重命名、切换、删除、JSON/Markdown 导出、Markdown 渲染与清理、SSE 流式输出、演示回复、停止生成、重新生成、工具确认卡片和工具后续继续。
 - **角色卡**：多角色列表、创建、复制、切换、删除、启用/停用、局部编辑、默认模型、提示词块添加/删除/启用/排序、角色卡 JSON 导出和导入。
 - 角色资料字段有未保存状态跟踪；提示词块仍沿用字段变更时分别保存。
-- **模型配置**：模型档案 CRUD、OpenAI-compatible Base URL、模型名、temperature、max tokens 等参数；API Key 只提交后端；真实非流式连接测试；聊天中切换模型。
+- **模型配置**：模型档案 CRUD、OpenAI-compatible 或 Responses API Key 协议、Base URL、模型名、temperature、max tokens、可选推理强度；API Key 只提交后端；真实非流式连接测试；聊天中切换模型。
 - **提示词与记忆**：长期/临时记忆、搜索、启用/停用、编辑/删除、历史条数、记忆开关、摘要和上下文预览。
 - **MCP 与工具**：保存服务、认证方式、连接、刷新工具、查看 schema、工具启停和确认策略。
 - **插件**：导入 JSON 清单、启停插件、逐工具授权、卸载；单文件前端上限 256 KB。
@@ -216,7 +217,7 @@
 - 备份保留 owner 账户及其密码哈希；导出/恢复剔除活动 session、登录尝试、模型 API Key、MCP secret 和 MCP session ID，恢复后需用原账户重新登录并重新配置服务密钥。不要把“全量快照”理解为包含密钥。
 - 数据库序列化上限为 64 MiB；导入会替换当前数据库文件，即使有格式、完整性和确认检查，也应先留存并校验当前数据的独立备份。
 - 恢复前在内存校验密码、归档成员、SQLite integrity check 和必需表，然后写入临时文件并原子替换数据库。
-- 这是本地备份能力，不等于已经完成异地定时备份和生产恢复演练。
+- 第二版已加入可选的本地目录/GitHub 定时备份，但尚未用真实 GitHub 凭据或生产环境做恢复演练。
 
 ## 8. 聊天、MCP 和插件执行链路
 
@@ -288,7 +289,7 @@
 - legacy SSE MCP 的完整适配；当前可保存该 transport，但不应把部分兼容逻辑当作全部通过。
 - provider-backed TTS/STT、真实麦克风、移动端和跨浏览器 QA。
 - URL/ZIP 插件包装、插件市场和可执行插件。
-- 自动异地备份、定时备份、生产恢复演练和部署加固。
+- 真实 GitHub 备份与生产恢复演练、部署加固。
 - Docker 镜像实际构建、VPS 迁移、HTTPS、反向代理和防火墙验收。
 - 独立页面组件拆分；当前 `/chat` 等路径使用共享功能面板的全页模式，另保留 `/hub` + 浮动窗口。
 - 角色卡导入的真实浏览器文件选择流程尚未在 QA 中执行；API round-trip/rejection 已有本地测试记录。
@@ -368,3 +369,24 @@ Test-Path .git
 ## 17. Repository note — 2026-10-23
 
 - The local directory is now a Git checkout tracking the private GitHub repository `jtnczflm2025-cyber/YOSAKI` on `main`. The initial project upload excludes SQLite databases, `.secret_key`, generated frontend JavaScript, dependencies, build output, and production environment secrets.
+
+## 18. V2 local increment — 2026-10-23
+
+- Backend adds legacy-compatible strict/chunked turn windows, persisted public reasoning text and character monologue, and actual provider usage display when present. The API Key based Responses adapter streams public reasoning summaries and keeps opaque continuation items server-side for approved tool turns; neither is hidden chain-of-thought access. Monologue is excluded from subsequent model context.
+- Batch archive endpoints live under `/api/archives`: JSON v2 is the migration format and includes historical tool-run details; Markdown/TXT are readable strict formats. Imports append inert historical messages and tool cards, preview before import, skip duplicate hashes, and enforce 8 MiB per file, 64 MiB per batch, and 20,000 messages per file. Browser stores only non-secret cleaning templates.
+- `/api/system/backup-plan` manages local and private GitHub encrypted backups. Scheduler defaults off. GitHub uploads retry transient failures at most three times; local and GitHub results are recorded separately, including a distinct cloud retention failure after successful upload. `YOSAKI_BACKUP_PASSWORD` and `YOSAKI_BACKUP_GITHUB_TOKEN` are backend environment variables and must never enter SQLite, exports, browser storage, logs, or Git. Use a dedicated backup repository. Git history persists after visible-file pruning.
+- The repository is currently private; ChatGPT plan OAuth eligibility, account authorization and real Responses provider verification remain pending. The current Responses profile uses an API Key and does not confer Plus entitlement. Do not claim hidden chain-of-thought access.
+- Run `npm run test:backend`, `npm run build`, and `.\.venv\Scripts\python.exe -m compileall -q backend\app`. The 9 backend tests use temporary data. An isolated browser run selected and imported `tests/fixtures/sample-conversation.json`, checked cleanup preview, model protocol controls, and backup settings. A second isolated run imported `tests/fixtures/sample-rich-conversation.json` and checked the separate collapsible reasoning and monologue areas plus an inert historical tool card without approval controls. The project SQLite and `.secret_key` SHA-256 hashes matched before and after these checks. Real provider/GitHub credentials, physical devices, Docker and VPS remain unverified.
+
+## 19. V2 acceptance hardening — 2026-10-23
+
+- The owner chose to keep the source repository private. The official ChatGPT plan usage path is documented for open-source, locally hosted apps, so OAuth work is paused pending an eligible route. Do not change repository visibility or imply the API Key Responses adapter consumes Plus allowance.
+- A successful local scheduled backup whose old-file pruning fails now reports `retention_failed` instead of `failed`; the new encrypted file remains present and the separate outcome is covered by an isolated test.
+- TXT archive imports now reject any unrecognized message boundary in the file, including after valid messages. Markdown/TXT export escapes body lines that begin with their format's boundary marker, and isolated round-trip checks cover both cases. The 9 backend tests, frontend build, backend compilation and isolated HTTP `/health` passed. No real backup environment credentials or Docker are available on this machine.
+
+## 20. ChatGPT plan trial and repository visibility — 2026-10-23
+
+- The owner has superseded the private-repository decision above: publish `jtnczflm2025-cyber/YOSAKI` without adding a license. Earlier private/OAuth-paused notes are historical. Public visibility alone does not establish eligibility for the documented open-source, locally hosted app route or prove Plus allowance works.
+- `backend/app/chatgpt_plan.py` provides an opt-in local OAuth trial. Set `YOSAKI_CHATGPT_PLAN_ENABLED=1` and restart the backend; connect from model settings. It uses dynamic registration, PKCE, state, nonce, ID-token validation, refresh and revocation, plus a separate Responses adapter without an API Key. A real account sign-in still requires the owner's consent in the browser.
+- OAuth credentials are encrypted in `.chatgpt_plan` under the selected data directory, outside SQLite and `.ybackup`; they are excluded from Git and Docker build context. The plan model uses the existing per-call MCP approval chain and never falls back to a paid API Key.
+- Isolated mock tests cover OAuth, refresh, models, stream, tool continuation and revocation. Real account eligibility, allowance, provider compatibility, GitHub backup, devices, Docker and VPS remain separate acceptance tasks. Do not report Plus as verified from mock results.

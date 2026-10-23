@@ -1,0 +1,38 @@
+{
+  "format": "yosaki-conversation",
+  "version": 2,
+  "title": "双区域与工具历史示例",
+  "character": "阿夜",
+  "messages": [
+    {
+      "role": "user",
+      "content": "请回顾这段示例。",
+      "created_at": "2026-10-23T13:00:00+08:00"
+    },
+    {
+      "role": "assistant",
+      "content": "这是说出口的内容。",
+      "reasoning_content": "这是供应商公开的摘要示例。",
+      "reasoning_source": "responses_summary",
+      "monologue_content": "这是角色内心独白示例。",
+      "created_at": "2026-10-23T13:00:05+08:00",
+      "tool_calls_json": "[{\"id\":\"sample-call\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"value\\\":\\\"示例\\\"}\"}}]",
+      "tool_runs": [
+        {
+          "tool_name": "echo",
+          "server_name": "示例 MCP",
+          "arguments": {"value": "示例"},
+          "status": "success",
+          "result": {"text": "已回显"}
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": "已回显",
+      "tool_call_id": "sample-call",
+      "tool_name": "echo",
+      "created_at": "2026-10-23T13:00:06+08:00"
+    }
+  ]
+}

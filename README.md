@@ -29,7 +29,7 @@ For an isolated instance, set `YOSAKI_DATA_DIR` to an absolute directory before 
 
 ## Local acceptance checks
 
-From the project root on Windows, run `npm run test:backend`, `npm run build`, and `.\.venv\Scripts\python.exe -m py_compile backend\app\main.py`. The backend suite uses temporary data directories and a local mock model/MCP server; it needs no real API keys or external endpoint. Passing these checks does not establish real provider, device, Docker, or VPS readiness.
+From the project root on Windows, run `npm run test:backend`, `npm run build`, and `.\.venv\Scripts\python.exe -m compileall -q backend\app`. The backend suite uses temporary data directories and local mock services; it needs no real API keys or external endpoint. Passing these checks does not establish real provider, device, Docker, or VPS readiness.
 
 ## First-run account setup and security
 
@@ -41,13 +41,31 @@ For HTTPS behind a correctly configured reverse proxy, set `YOSAKI_COOKIE_SECURE
 
 - Responsive welcome/workspace shell, draggable feature windows, character editing, and chat history.
 - FastAPI + SQLite persistence for the single owner account and sessions, characters, prompt blocks, conversations, messages, memories, summaries, model profiles, MCP services/tools, tool runs, and controlled plugin manifests.
-- OpenAI-compatible streamed chat with optional MCP function tools. Tool calls pause for explicit chat approval; approve/reject and continuation are persisted.
-- Model, MCP, and plugin secrets are encrypted server-side and are never stored in browser localStorage.
+- OpenAI-compatible streamed chat with optional MCP function tools. Tool calls pause for explicit chat approval; approve/reject and continuation are persisted. Compatible providers can stream `reasoning_content` and receive an optional `reasoning_effort` setting; role monologue is separately stored and never sent back as history.
+- Per-character strict or chunked turn windows, batch conversation archives, and optional encrypted local/GitHub backup plans.
+- Model, MCP, and plugin secrets are encrypted server-side and are never stored in browser localStorage. The optional ChatGPT OAuth record is encrypted in the backend data directory, outside SQLite backups.
 - Demo replies remain available when no model profile is selected. No live third-party model or MCP endpoint was tested in the latest tool-loop/plugin stage.
 
 ## Still pending
 
-URL/ZIP plugin packaging, legacy SSE MCP transport, provider-backed TTS/STT adapters, automated backups, and production VPS deployment/hardening. Recursive tool batches during continuation and stop/regenerate are implemented; real provider/MCP compatibility still needs verification. Authentication exists for local development; do not expose the development service publicly until HTTPS, reverse proxy, firewall, secure cookie configuration, and deployment hardening are reviewed.
+URL/ZIP plugin packaging, legacy SSE MCP transport, provider-backed TTS/STT adapters, real ChatGPT account authorization, and production VPS deployment/hardening. Recursive tool batches during continuation and stop/regenerate are implemented; real provider/MCP/Responses compatibility and real GitHub backup credentials still need verification. Authentication exists for local development; do not expose the development service publicly until HTTPS, reverse proxy, firewall, secure cookie configuration, and deployment hardening are reviewed.
+
+## V2 local features (2026-10-23)
+
+- New characters default to the strict 50-turn context window. Existing character rows retain their old message-count setting until changed. Chunked mode retains a stable history segment between periodic trims. The context preview shows the selected messages; provider usage is shown only when returned.
+- Model profiles can select OpenAI-compatible Chat Completions or the API Key based OpenAI Responses protocol. Responses streams public reasoning summaries separately from spoken text, preserves opaque reasoning continuation data server-side for tool turns, and uses the existing per-call approval chain. The opaque state is omitted from ordinary message and archive APIs. This local adapter has only been checked against a mock endpoint.
+- Chat exports support versioned JSON or readable Markdown/TXT in a ZIP, date/turn filters, display names, multiple text replacements, paragraph and time controls, and selectable code/tool/reasoning/monologue output. Templates stay in browser localStorage. Import previews each file and adds conversations to the chosen character; duplicate file hashes are skipped. JSON preserves tool run details as inert history cards with no approval actions. Imports limit each file to 8 MiB, each batch to 64 MiB, and each file to 20,000 messages; Markdown/TXT require the default role markers shown in [chat archive examples](docs/CHAT_ARCHIVES.md).
+- Settings can configure a local sync directory and a separate private GitHub repository for encrypted `.ybackup` files. Scheduled runs default off; when enabled they default to 03:00 Asia/Hong_Kong, keeping seven visible files. Set `YOSAKI_BACKUP_PASSWORD` (12+ characters) and, for GitHub, `YOSAKI_BACKUP_GITHUB_TOKEN` in the backend environment. Keep both out of source control. The GitHub token needs access to repository metadata and Contents write permission on the dedicated repository. Transient GitHub upload errors receive at most three attempts; a failed upload leaves a successful local backup in place. Retention runs only after upload succeeds and reports a separate cleanup failure state. Restore downloads a remote file for the existing confirmed import flow. Deleting old GitHub files does not erase Git history.
+- ChatGPT plan usage remains an independent eligibility trial. YOSAKI now has an opt-in local OAuth and direct Responses adapter with encrypted backend credential storage, scope checks, token refresh/revocation, a model catalog and the existing tool confirmation chain. The owner chose public repository visibility without adding a license; visibility alone does not establish open-source eligibility. No real account entitlement or model call has been verified. The separate API Key Responses profile does not consume ChatGPT Plus allowance.
+- Local validation uses `npm run test:backend`, `npm run build`, and backend compilation. An isolated browser run selected, previewed, and imported the example JSON file, checked the cleanup preview and the model/backup controls. The real database and Fernet key hashes were unchanged.
+
+## ChatGPT plan connection trial
+
+The [official preview](https://developers.openai.com/siwc/token-sharing-open-source) describes plan usage for eligible open-source, locally hosted applications and accounts. This repository is publicly visible but has no license at the owner's request, so eligibility is unconfirmed. The feature is disabled by default and must be used from a local YOSAKI instance; do not enable it on a public/VPS host.
+
+Set `YOSAKI_CHATGPT_PLAN_ENABLED=1` in the backend environment, restart the backend, then open **模型配置 → ChatGPT 套餐接入 → Continue with ChatGPT**. The system browser handles account authorization, returns to a temporary `127.0.0.1` callback, and YOSAKI lists models only after the required plan scope is granted. Add a listed model and use **测试真实连接** before chatting. This action requires a real ChatGPT account and consent; local mock tests do not establish eligibility or Plus billing behavior. If the account is ineligible or reaches its limit, YOSAKI reports the failure and does not silently use a paid API Key.
+
+OAuth tokens are encrypted in `YOSAKI_DATA_DIR/.chatgpt_plan` (or `data/.chatgpt_plan` by default). Keep this file and `.secret_key` private. It is excluded from `.ybackup`, Git, and Docker build context. Disconnect attempts remote revocation and removes local tokens. The feature follows the [official sign-in](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) and [Responses limits](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations) documented for this preview.
 
 ## Character editing update (2026-10-23)
 
