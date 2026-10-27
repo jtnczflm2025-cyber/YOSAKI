@@ -43,12 +43,56 @@ For HTTPS behind a correctly configured reverse proxy, set `YOSAKI_COOKIE_SECURE
 - FastAPI + SQLite persistence for the single owner account and sessions, characters, prompt blocks, conversations, messages, memories, summaries, model profiles, MCP services/tools, tool runs, and controlled plugin manifests.
 - OpenAI-compatible streamed chat with optional MCP function tools. Tool calls pause for explicit chat approval; approve/reject and continuation are persisted. Compatible providers can stream `reasoning_content` and receive an optional `reasoning_effort` setting; role monologue is separately stored and never sent back as history.
 - Per-character strict or chunked turn windows, batch conversation archives, and optional encrypted local/GitHub backup plans.
+- Per-character opt-in simulated drives, manual awakening, bounded model/tool activity, confirmed feedback, and reviewable preference changes. See [V3 desire system](docs/DESIRES.md).
+- Separate read-only state advice, simulated introspection, and persistent candidate interests, pending intentions, and long-term commitments. See [volition Phase 2](docs/VOLITION.md).
+- Manually started, backend-run free activity with a persistent local exploration scene, bounded budgets, per-operation permission checks, and cross-awakening experience history. See [autonomous activity Phase 3](docs/AUTONOMY.md).
+- Phase 4 feedback for free activity: verified operation evidence, optional simulated review, pre-action enjoyment expectations, reviewable short-term drive changes, and candidate interest evidence. See [feedback and expectation gap](docs/FEEDBACK.md).
+- Phase 5 long-term learning: confirmed free-activity feedback becomes traceable evidence; memory, preference, strategy, and goal continuity changes are reviewed before entering future context. See [long-term learning](docs/LEARNING.md).
+- Phase 6 simulated psychology: evidence-linked emotion, virtual body load, reflective desires, bounded relations and conflict history. These are references for volition, never execution permissions. See [psychological state](docs/PSYCHOLOGY.md).
 - Model, MCP, and plugin secrets are encrypted server-side and are never stored in browser localStorage. The optional ChatGPT OAuth record is encrypted in the backend data directory, outside SQLite backups.
 - Demo replies remain available when no model profile is selected. No live third-party model or MCP endpoint was tested in the latest tool-loop/plugin stage.
 
 ## Still pending
 
-URL/ZIP plugin packaging, legacy SSE MCP transport, provider-backed TTS/STT adapters, real ChatGPT account authorization, and production VPS deployment/hardening. Recursive tool batches during continuation and stop/regenerate are implemented; real provider/MCP/Responses compatibility and real GitHub backup credentials still need verification. Authentication exists for local development; do not expose the development service publicly until HTTPS, reverse proxy, firewall, secure cookie configuration, and deployment hardening are reviewed.
+URL/ZIP plugin packaging, legacy SSE MCP transport, provider-backed TTS/STT adapters, and production VPS deployment/hardening. Recursive tool batches during continuation and stop/regenerate are implemented; broader real provider/MCP/Responses compatibility and real GitHub backup credentials still need verification. A local ChatGPT account sign-in and one model stream were tested on 2026-10-23; this does not verify other accounts or models. Authentication exists for local development; do not expose the development service publicly until HTTPS, reverse proxy, firewall, secure cookie configuration, and deployment hardening are reviewed.
+
+## V3 desire system (2026-10-24)
+
+Open **欲望与意愿** at `/desires` or in a floating workspace window. It starts disabled for every character. Once enabled, twelve simulated drives can receive explicit events and confirmed activity feedback; ordinary chat only reads a short relevant advisory. Debug simulation never writes the character's state. State snapshots can be saved and restored.
+
+Manual awakening uses a selected configured model profile. Each session has a deadline and model/tool call limits; it never starts on a schedule or resumes execution automatically after a server restart. The model returns a validated public decision summary and may choose to rest, defer, reject, draft an activity, or request an allowed MCP tool. Tools marked and selected as read-only by the owner can execute within that session; all other requests wait for an individual decision. YOSAKI cannot verify arbitrary third-party MCP side effects, so only mark a tool read-only after checking it yourself. Chat tool approval remains unchanged. Positive repeated feedback may create a small baseline change suggestion; the owner must apply it and may roll it back.
+
+V3 was checked with isolated API tests and a temporary browser instance, including enabling a character, viewing all drives, isolated simulation, explicit event recording, a mocked model/tool awakening cycle, policy revocation and preference rollback. Real autonomous provider/MCP behavior, physical devices and production deployment remain unverified.
+
+## Desire system Phase 2 (2026-10-24)
+
+In **欲望与意愿**, the new observation and pure decision buttons use the selected model profile once per request. They save public, simulated descriptions and decisions; they do not execute activities or call MCP tools. Candidate interests, deferred intentions, and explicit long-term commitments persist across awakenings. Deferred intentions have no automatic deadline, urgency growth, or failure state. The existing manual awakening remains separate and receives these intentions as context. The backend version is `0.19.0`. See [Phase 2 interfaces and migration](docs/VOLITION.md).
+
+## Desire system Phase 3 (2026-10-24)
+
+In **欲望与意愿 → 自主活动**, select a model, the local exploration scene, a real-time window, model/action call limits, a cumulative output token limit, and any MCP tools allowed for this session. Then click **开始自由活动**. The backend proceeds step by step while it remains running, even if the page closes. There is no scheduled wake-up. A backend restart pauses the session; an in-flight operation with no confirmed result becomes unknown and is never replayed automatically. Pausing does not extend the deadline.
+
+The local scene stores inspected objects and discoveries per character. Future environments use the `EnvironmentAdapter` interface; the first scene is example simulation content, not a claim about real geography. Activity plans, actual operation results, simulated remarks, and unresolved interests remain distinguishable and available to later awakenings. A finished session does not automatically complete a lasting goal. MCP calls still require the same explicit tool selection and, unless a verified read-only policy applies, per-call confirmation. New pending feedback events do not change drives until a later confirmed feedback flow. See [Phase 3 APIs, migration and recovery](docs/AUTONOMY.md). Backend version: `0.20.0`.
+
+## Desire system Phase 4 (2026-10-26)
+
+Free activity now reserves an optional separate experience-review call when it starts. The character may record a nullable enjoyment expectation before an action. After the session, the backend groups actual results by plan and generates a short simulated review when authorized. The feedback panel shows evidence, expectation gap, calculated short-term drive changes and interest clues. None of these changes affects formal drives until the owner reviews and applies them. A confirmed feedback transaction is idempotent; stale drive versions require a fresh review of the recalculated proposal. Long-term baseline and goals are not changed by this pipeline. Old guided awakening and chat feedback retain their previous flows. See [Phase 4 rules and API](docs/FEEDBACK.md). Backend version: `0.21.0`.
+
+## Desire system Phase 5 (2026-10-27)
+
+The new `/learning` page and `hub?window=learning` panel show traceable activity evidence, reviewable memories and preferences, a preference history chart, conditional strategies, and goal progress references. Phase 4 confirmation collects evidence without a model call; complex consolidation is a separate manual, budgeted model request. Formal long-term learning enters future volition and free-activity context only after review. It never edits character prompts or drive baselines, and it never starts an activity. See [Phase 5 design and API](docs/LEARNING.md). Backend version: `0.22.0`.
+
+Isolated backend regression passed 22 tests, with targeted Phase 4/5 checks after the latest changes. Python compilation and frontend production build passed. An isolated browser session verified preference approval, manual correction, source-linked history, rollback, and both page and floating-window modes. Real model providers, third-party MCP, devices, Docker and VPS remain unverified.
+
+## Desire system Phase 6 (2026-10-27)
+
+The new `/psychology` page and `hub?window=psychology` panel show simulated emotion, virtual energy and load, lasting reflective tensions, bounded directed relations, conflict decisions and event sources. Completed operations update virtual load once; applied Phase 4 feedback updates emotion using a validated appraisal or deterministic fallback. At free activity start, a separate Phase 6 allowance reserves at most one appraisal model call and 128–1200 output tokens. The estimate is a cap, not a dollar price. No psychological field can execute tools, alter a drive baseline or approve long-term learning. See [Phase 6 rules, API and migration](docs/PSYCHOLOGY.md). Backend version: `0.23.0`. Local acceptance: 25 isolated backend tests, Python compilation, frontend build and isolated browser full-page/window checks passed; real provider, MCP, device and deployment checks remain separate.
+
+Isolated validation passed 20 backend tests, Python compilation and the frontend production build. A temporary browser instance completed a mock free activity, displayed `70 → 90` as a `+20` expectation gap, applied feedback only after confirmation, and retained the record after switching to the full page and refreshing. Real provider/MCP, device and VPS acceptance remain separate.
+
+### Live ChatGPT plan check for the desire system — 2026-10-27
+
+The previously authorized local `gpt-6.1-sol` profile was tested with a temporary SQLite database and role. The desire system's shared model entry now consumes the required streamed Responses events; it waits for `response.completed`, reads output text deltas, and caps output with the selected profile. Schema-guided output is used for structured decisions. Live observation and pure volition both passed validation. A bounded free session chose a local environment action, received a successful result, and recorded one psychological operation event. A confirmed feedback record fed a completed manual Phase 5 consolidation; a separate Phase 6 appraisal completed. One Phase 4 review validly returned no subjective evaluation, so that run made no invented drive change. Temporary test data was discarded; the existing authorization was only read or refreshed. This check does not establish third-party MCP, other models, devices, or deployment compatibility. [Official plan inference guidance](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference) requires `store=false`, `stream=true` and a terminal completion event.
 
 ## V2 local features (2026-10-23)
 

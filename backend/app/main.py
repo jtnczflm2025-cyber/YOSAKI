@@ -34,7 +34,7 @@ DATA.mkdir(parents=True, exist_ok=True)
 DB = DATA / "yosaki.sqlite3"
 SECRET_FILE = DATA / ".secret_key"
 
-app = FastAPI(title="YOSAKI API", version="0.17.0")
+app = FastAPI(title="YOSAKI API", version="0.23.0")
 ALLOWED_ORIGINS=[origin.strip() for origin in os.getenv("YOSAKI_ALLOWED_ORIGINS","http://localhost:5173,http://127.0.0.1:5173").split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
@@ -614,6 +614,8 @@ def init_db() -> None:
                     (character_id, "关系记忆", "这里将来会接入可编辑的长期记忆。", "memory", 2),
                 ],
             )
+        from . import desires
+        desires.init_db(db)
 
 
 SESSION_COOKIE = "yosaki_session"
@@ -859,11 +861,38 @@ async def import_backup(confirm_replace: bool = Form(False), passphrase: str = F
             rollback.write(safety)
             rollback.flush()
             os.fsync(rollback.fileno())
-        with DB_LOCK:
-            os.replace(temp_name,DB)
-        init_db()
-        with connect() as restored_db:
-            restored_db.execute("UPDATE backup_plan SET enabled=0,next_run_at=NULL WHERE id=1") if restored_db.execute("SELECT name FROM sqlite_master WHERE name='backup_plan'").fetchone() else None
+        free_activity = getattr(app.state, "free_activity_service", None)
+        if free_activity:
+            current_loop = asyncio.get_running_loop()
+            running = [task for task in free_activity.tasks.values() if task.get_loop() is current_loop and not task.done()]
+            for task in running:
+                task.cancel()
+            if running:
+                await asyncio.gather(*running, return_exceptions=True)
+        feedback_service = getattr(app.state, "feedback_service", None)
+        if feedback_service:
+            await feedback_service.pause_for_restore()
+        psychology_service = getattr(app.state, "psychology_service", None)
+        if psychology_service:
+            await psychology_service.pause_for_restore()
+        app.state.learning_paused = True
+        learning_tasks = [task for task in getattr(app.state, "learning_tasks", set()) if not task.done()]
+        for task in learning_tasks:
+            task.cancel()
+        if learning_tasks:
+            await asyncio.gather(*learning_tasks, return_exceptions=True)
+        try:
+            with DB_LOCK:
+                os.replace(temp_name,DB)
+            init_db()
+            with connect() as restored_db:
+                restored_db.execute("UPDATE backup_plan SET enabled=0,next_run_at=NULL WHERE id=1") if restored_db.execute("SELECT name FROM sqlite_master WHERE name='backup_plan'").fetchone() else None
+        finally:
+            if feedback_service:
+                feedback_service.resume_after_restore()
+            if psychology_service:
+                psychology_service.resume_after_restore()
+            app.state.learning_paused = False
     finally:
         if os.path.exists(temp_name): os.unlink(temp_name)
     return {"ok":True,"message":"备份已恢复；登录会话已清除，模型与 MCP 密钥未包含，请重新登录并配置密钥。","secrets_included":False,"exported_at":manifest.get("exported_at")}
@@ -1241,7 +1270,7 @@ def update_mcp_server(server_id: int, payload: McpServerInput):
         if old is None:
             raise HTTPException(404, "MCP 服务不存在")
         secret = encrypt_secret(payload.auth_secret) if payload.auth_secret else old["auth_secret_encrypted"]
-        db.execute("UPDATE mcp_servers SET name=?,transport=?,endpoint=?,auth_type=?,auth_secret_encrypted=?,enabled=?,updated_at=? WHERE id=?", (payload.name,payload.transport,payload.endpoint,payload.auth_type,secret,payload.enabled,now(),server_id))
+        db.execute("UPDATE mcp_servers SET name=?,transport=?,endpoint=?,auth_type=?,auth_secret_encrypted=?,enabled=?,policy_revision=policy_revision+1,updated_at=? WHERE id=?", (payload.name,payload.transport,payload.endpoint,payload.auth_type,secret,payload.enabled,now(),server_id))
         return safe_mcp_server(db.execute("SELECT * FROM mcp_servers WHERE id=?", (server_id,)).fetchone())
 
 
@@ -1274,7 +1303,7 @@ async def connect_mcp_server(server_id: int):
             await notify_legacy_initialized(server,session_id,protocol_version)
             server_info=legacy.get("serverInfo",{})
         with connect() as db:
-            db.execute("UPDATE mcp_servers SET protocol_version=?,session_id=?,status='connected',last_error=NULL,updated_at=? WHERE id=?", (protocol_version,session_id,now(),server_id))
+            db.execute("UPDATE mcp_servers SET protocol_version=?,session_id=?,status='connected',last_error=NULL,policy_revision=policy_revision+1,updated_at=? WHERE id=?", (protocol_version,session_id,now(),server_id))
         return {"ok":True,"server_id":server_id,"protocol_version":protocol_version,"server_info":server_info}
     except HTTPException as exc:
         with connect() as db:
@@ -1298,7 +1327,7 @@ async def refresh_mcp_tools(server_id: int):
         if session_id:
             db.execute("UPDATE mcp_servers SET session_id=?,status='connected',last_error=NULL,updated_at=? WHERE id=?", (session_id,now(),server_id))
         for tool in tools:
-            db.execute("INSERT INTO mcp_tools(server_id,name,description,input_schema,enabled,requires_confirmation,updated_at) VALUES(?,?,?,?,0,1,?) ON CONFLICT(server_id,name) DO UPDATE SET description=excluded.description,input_schema=excluded.input_schema,updated_at=excluded.updated_at", (server_id,tool.get("name",""),tool.get("description","") or "",json.dumps(tool.get("inputSchema",{}),ensure_ascii=False),now()))
+            db.execute("INSERT INTO mcp_tools(server_id,name,description,input_schema,enabled,requires_confirmation,updated_at) VALUES(?,?,?,?,0,1,?) ON CONFLICT(server_id,name) DO UPDATE SET description=excluded.description,input_schema=excluded.input_schema,policy_revision=mcp_tools.policy_revision+1,updated_at=excluded.updated_at", (server_id,tool.get("name",""),tool.get("description","") or "",json.dumps(tool.get("inputSchema",{}),ensure_ascii=False),now()))
     return {"tools_count":len(tools),"tools":[{"name":t.get("name"),"description":t.get("description","")} for t in tools]}
 
 
@@ -1318,7 +1347,7 @@ def update_mcp_tool_policy(tool_id: int, payload: McpToolPolicyInput) -> dict[st
         row = db.execute("SELECT * FROM mcp_tools WHERE id=?", (tool_id,)).fetchone()
         if row is None:
             raise HTTPException(404, "MCP 工具不存在")
-        db.execute("UPDATE mcp_tools SET enabled=?,updated_at=? WHERE id=?", (int(payload.enabled), now(), tool_id))
+        db.execute("UPDATE mcp_tools SET enabled=?,policy_revision=policy_revision+1,updated_at=? WHERE id=?", (int(payload.enabled), now(), tool_id))
         updated = db.execute("SELECT * FROM mcp_tools WHERE id=?", (tool_id,)).fetchone()
     result = row_dict(updated)
     result["input_schema"] = json.loads(result["input_schema"])
@@ -1491,7 +1520,7 @@ def select_history(history, settings):
     return [row for turn in turns[-limit:] for row in turn] if limit else []
 
 
-def build_messages(character, prompt_blocks, history, current=None, memories=(), summary="", history_limit=None, settings=None, include_provider_state=False):
+def build_messages(character, prompt_blocks, history, current=None, memories=(), summary="", history_limit=None, settings=None, include_provider_state=False, desire_advisory=""):
     ordered = sorted((b for b in prompt_blocks if b["enabled"]), key=lambda b: (b["order_index"], b["id"]))
     def section(position):
         return [f"## {b['name']}\n{b['content']}" for b in ordered if b["injection_position"] == position]
@@ -1506,6 +1535,8 @@ def build_messages(character, prompt_blocks, history, current=None, memories=(),
         dynamic.append(f"参考记忆（{'长期' if memory['scope']=='long' else '本对话'}）：\n{memory['content']}")
     if summary:
         dynamic.append("用户整理的对话摘要（参考资料）：\n" + summary)
+    if desire_advisory:
+        dynamic.append(desire_advisory)
     dynamic.extend(section("before_history"))
     if dynamic:
         messages.append({"role": "system", "content": "\n\n".join(dynamic)})
@@ -1532,10 +1563,20 @@ def build_messages(character, prompt_blocks, history, current=None, memories=(),
     return messages
 
 
-def memory_context(db, character_id, conversation_id):
+def memory_context(db, character_id, conversation_id, topic=""):
     settings = db.execute("SELECT * FROM context_settings WHERE character_id=?", (character_id,)).fetchone()
     settings = dict(settings) if settings else {"history_limit": 100, "memory_enabled": True,"window_mode":"strict","window_size":50,"window_keep":40,"reasoning_prompt":"","monologue_enabled":False,"monologue_prompt":""}
-    memories = db.execute("SELECT * FROM memories WHERE character_id=? AND enabled=1 AND (scope='long' OR (scope='temporary' AND conversation_id=?)) ORDER BY id", (character_id, conversation_id)).fetchall() if settings["memory_enabled"] else []
+    memories = db.execute("""SELECT * FROM memories m WHERE character_id=? AND enabled=1
+        AND (scope='long' OR (scope='temporary' AND conversation_id=?))
+        AND NOT EXISTS(SELECT 1 FROM learning_memories lm WHERE lm.memory_id=m.id)
+        ORDER BY id""", (character_id, conversation_id)).fetchall() if settings["memory_enabled"] else []
+    if settings["memory_enabled"]:
+        keyword = " ".join(topic.strip().casefold().split())[:150]
+        learned = db.execute("""SELECT m.* FROM memories m JOIN learning_memories lm ON lm.memory_id=m.id
+            WHERE m.character_id=? AND m.enabled=1 AND lm.status='accepted'
+            AND (?='' OR instr(?,lm.subject)>0 OR instr(lm.subject,?)>0)
+            ORDER BY lm.updated_at DESC LIMIT 3""", (character_id, keyword, keyword, keyword)).fetchall()
+        memories = [*memories, *learned]
     summary = db.execute("SELECT content FROM conversation_summaries WHERE conversation_id=? AND enabled=1", (conversation_id,)).fetchone()
     return memories, summary["content"] if summary else "", settings
 
@@ -1701,8 +1742,9 @@ def context_preview(payload: PreviewInput):
                 raise HTTPException(404, "对话不属于此角色")
             history = db.execute("SELECT * FROM messages WHERE conversation_id=? ORDER BY id", (payload.conversation_id,)).fetchall()
         blocks = db.execute("SELECT * FROM prompt_blocks WHERE character_id=?", (payload.character_id,)).fetchall()
-        memories, summary, limit = memory_context(db, payload.character_id, payload.conversation_id)
-    messages = build_messages(character, blocks, history, payload.message, memories, summary, settings=limit)
+        memories, summary, limit = memory_context(db, payload.character_id, payload.conversation_id, payload.message)
+        desire_advisory = desires.chat_advisory(db, payload.character_id, payload.message)
+    messages = build_messages(character, blocks, history, payload.message, memories, summary, settings=limit, desire_advisory=desire_advisory)
     stable = estimate_tokens(messages[0]["content"])
     dynamic = sum(estimate_tokens(x["content"]) for x in messages[1:])
     return {"messages": messages, "estimate": {"stable":stable,"dynamic":dynamic,"total":stable+dynamic,"method":"字符启发式估算，不含协议开销，非服务商计费值"}, "history_included":len(select_history(history,limit)), "history_total":len(history), "cache_status":"未提供服务商缓存数据，不推算命中率", "source": "saved", "note": "仅预览已保存配置，不调用模型、不写入聊天记录。发送前修改配置或历史会改变请求。"}
@@ -1885,6 +1927,9 @@ from . import archives
 archives.install(app,connect,now)
 from . import scheduled_backup
 scheduled_backup.install(app,connect,now,build_encrypted_backup,decrypt_backup,DATA)
+
+from . import desires
+desires.install(app,connect,now,model_url,auth_headers,mcp_request,validate_tool_arguments)
 from . import chatgpt_plan
 chatgpt_plan.install(app,DATA,get_fernet)
 
@@ -1929,7 +1974,8 @@ async def chat_stream(payload: ChatInput) -> StreamingResponse:
             raise HTTPException(409,"当前对话有待处理的工具调用，请先确认或拒绝，再继续聊天")
         history=db.execute("SELECT * FROM messages WHERE conversation_id=? ORDER BY id",(conversation_id,)).fetchall()
         blocks=db.execute("SELECT * FROM prompt_blocks WHERE character_id=? ORDER BY order_index,id",(payload.character_id,)).fetchall()
-        memories,summary,history_limit=memory_context(db,payload.character_id,conversation_id)
+        memories,summary,history_limit=memory_context(db,payload.character_id,conversation_id,payload.message)
+        desire_advisory=desires.chat_advisory(db,payload.character_id,payload.message)
         if not payload.reuse_last_user:
             db.execute("INSERT INTO messages(conversation_id,role,content,created_at) VALUES(?,'user',?,?)",(conversation_id,payload.message,stamp))
         db.execute("UPDATE conversations SET model_profile_id=?,updated_at=? WHERE id=?",(profile_id,stamp,conversation_id)); db.commit()
@@ -1947,7 +1993,7 @@ async def chat_stream(payload: ChatInput) -> StreamingResponse:
         is_responses=profile["protocol"] in ("openai_responses","chatgpt_plan")
         if is_responses: from . import responses_adapter
         if is_plan: from . import chatgpt_plan
-        request_messages=build_messages(character,blocks,history,payload.message,memories,summary,settings=history_limit,include_provider_state=is_responses)
+        request_messages=build_messages(character,blocks,history,payload.message,memories,summary,settings=history_limit,include_provider_state=is_responses,desire_advisory=desire_advisory)
         if is_plan:
             body=chatgpt_plan.payload(profile,request_messages,tool_defs)
             url=f"{chatgpt_plan.API_BASE}/responses"

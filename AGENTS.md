@@ -2,7 +2,7 @@
 
 > 本文件记录当前项目的结构、运行方式、功能边界、安全约束和验证状态，供后续开发、调试、审查和部署使用。
 > 适用目录：`D:\AI xiangmu\自建前端`
-> 最近核对：2026-10-23（Asia/Hong_Kong）。项目整体核对范围见第 11、13 节；本日增量见第 15 节。
+> 最近核对：2026-10-27（Asia/Hong_Kong）。项目整体核对范围见第 11、13 节；欲望系统与套餐模型实测见第 22–29 节。
 
 ## 1. 项目定位与当前状态
 
@@ -13,7 +13,7 @@
   ```text
   欢迎页 / → 导航工作台 /hub → 可组合的浮动功能窗口
   ```
-- 当前后端版本：`0.17.0`（`backend/app/main.py` 中的 FastAPI `version`）；前端 `package.json` 版本为 `0.1.0`，两者不代表同一发布版本。
+- 当前后端版本：`0.23.0`（`backend/app/main.py` 中的 FastAPI `version`）；前端 `package.json` 版本为 `0.1.0`，两者不代表同一发布版本。
 - 默认种子角色：阿夜（夜色里的共振者）。首次初始化数据库时会创建阿夜、提示词块和基础上下文设置。
 - 产品原则：保留中文界面、阿夜的自主性、用户逐次选择和状态/可能性展示；不要在没有产品授权时把工作台强行改成单一路径聊天页。
 
@@ -31,6 +31,8 @@
 - 记忆、摘要、上下文设置和上下文预览。
 - 浏览器/系统 TTS，以及带远程识别明确同意步骤的 STT。
 - 加密 `.ybackup` 全量 SQLite 快照导出/导入。
+- 欲望系统 Phase 1～6：驱力、意愿与未决池、有界自由活动、经确认的体验反馈、可追溯长期学习、模拟心理状态。
+- 本机可选的 ChatGPT 套餐 OAuth 模型档案；在隔离角色中实测了欲望系统的结构化调用及本地环境操作。
 - Docker/Nginx/VPS 部署骨架。
 
 ## 2. 目录结构
@@ -39,6 +41,12 @@
 自建前端/
 ├─ backend/
 │  ├─ app/main.py                 # FastAPI 单文件后端、SQLite、认证和全部业务 API
+│  ├─ app/desires.py              # V3 模拟驱力、意愿与手动唤醒 API
+│  ├─ app/volition.py             # 欲望系统 Phase 2：参谋、观察、持续意愿
+│  ├─ app/autonomy.py             # 欲望系统 Phase 3：自主活动与环境适配器
+│  ├─ app/feedback.py             # 欲望系统 Phase 4：体验反馈、预期差与受控调节
+│  ├─ app/learning.py             # 欲望系统 Phase 5：长期学习、审阅与证据来源
+│  ├─ app/psychology.py           # 欲望系统 Phase 6：情绪、虚拟身体、二阶欲望及关联
 │  └─ requirements.txt            # Python 后端依赖
 ├─ frontend/
 │  ├─ index.html                  # Vue 入口 HTML
@@ -47,6 +55,12 @@
 │  ├─ tsconfig.json               # Vue + TypeScript 配置
 │  └─ src/
 │     ├─ App.vue                  # 当前主要前端源代码，状态、逻辑和模板集中在此
+│     ├─ DesirePanel.vue          # V3 欲望与意愿面板
+│     ├─ VolitionPanel.vue         # Phase 2 观察、判断与未决意愿池
+│     ├─ FreeActivityPanel.vue     # Phase 3 自主活动控制与时间线
+│     ├─ FeedbackPanel.vue         # Phase 4 体验反馈审阅
+│     ├─ LearningPanel.vue         # Phase 5 长期学习与偏好时间线
+│     ├─ PsychologyPanel.vue       # Phase 6 模拟心理状态与冲突来源
 │     ├─ App.vue.js               # vue-tsc 生成/辅助产物，不应手工编辑
 │     ├─ main.ts                  # 实际入口，挂载 App.vue 和 style.css
 │     ├─ main.js                  # 生成/备用 JS 入口，当前不是 index.html 的源入口
@@ -68,7 +82,13 @@
 │  ├─ PLAN.md                     # 产品入口、窗口模型和阶段计划
 │  ├─ CHAT_ARCHIVES.md            # 第二版聊天档案格式与示例
 │  ├─ PLUGINS.md                  # 受控插件工具包 v1 说明
-│  └─ CHARACTER_CARDS.md          # 角色卡 JSON v1 格式与导入导出边界
+│  ├─ CHARACTER_CARDS.md          # 角色卡 JSON v1 格式与导入导出边界
+│  ├─ DESIRES.md                  # V3 欲望系统与授权边界
+│  ├─ VOLITION.md                 # Phase 2 意愿状态与接口
+│  ├─ AUTONOMY.md                 # Phase 3 活动、环境与恢复
+│  ├─ FEEDBACK.md                 # Phase 4 反馈规则、预期差与接口
+│  └─ LEARNING.md                 # Phase 5 证据、审阅、算法与接口
+│  └─ PSYCHOLOGY.md               # Phase 6 事件顺序、规则、迁移与边界
 ├─ plugins/                       # 当前插件相关目录，具体可执行能力仍不开放
 ├─ tests/test_local_acceptance.py # 隔离 API 与模拟模型/MCP 验收
 ├─ README.md                      # 本地运行、产品状态和迭代记录
@@ -128,7 +148,7 @@
 ### 入口和认证
 
 - `frontend/src/App.vue` 根据 `window.location.pathname` 区分主要的 `welcome` 与 `hub` 视图；当前主要实际路径是 `/` 和 `/hub`。
-- `/chat`、`/characters`、`/models`、`/memory`、`/mcp`、`/plugins`、`/voice`、`/settings` 已支持全页工作区模式，并与 `/hub?window=<kind>` 浮动窗口模式共用同一功能界面；它们尚未拆分为独立页面组件。
+- `/chat`、`/characters`、`/models`、`/memory`、`/desires`、`/learning`、`/psychology`、`/mcp`、`/plugins`、`/voice`、`/settings` 已支持全页工作区模式，并与 `/hub?window=<kind>` 浮动窗口模式共用同一功能界面；它们尚未拆分为独立页面组件。
 - 路由由 App.vue 读取 `location.pathname`、query 和 History API 管理，没有引入 Vue Router；未知路径目前落入欢迎视图。Nginx 的 SPA fallback 只保证能加载入口文件。
 - 首次进入调用认证状态接口：
   - 没有 owner：显示一次性账户初始化。
@@ -138,7 +158,7 @@
 
 ### 工作台和窗口
 
-- `features` 包含 8 个入口：聊天、角色卡、模型配置、提示词与记忆、MCP 与工具、插件、语音、系统设置。
+- `features` 包含 11 个入口：聊天、角色卡、模型配置、提示词与记忆、欲望与意愿、长期学习、心理状态、MCP 与工具、插件、语音、系统设置。
 - `WindowInstance` 字段包括 `id`、`kind`、`title`、`x`、`y`、`width`、`height`、`zIndex`、`minimized`、`maximized`。
 - 窗口操作集中在 App.vue：同类窗口复用、聚焦、关闭、最小化、最大化、拖动和布局恢复。
 - 布局写入 `localStorage`：`YOSAKI.window-layout.v1`；语音偏好写入 `YOSAKI.voice.locale`、`YOSAKI.voice.rate`、`YOSAKI.voice.voiceURI`。
@@ -153,6 +173,9 @@
 - 角色资料字段有未保存状态跟踪；提示词块仍沿用字段变更时分别保存。
 - **模型配置**：模型档案 CRUD、OpenAI-compatible 或 Responses API Key 协议、Base URL、模型名、temperature、max tokens、可选推理强度；API Key 只提交后端；真实非流式连接测试；聊天中切换模型。
 - **提示词与记忆**：长期/临时记忆、搜索、启用/停用、编辑/删除、历史条数、记忆开关、摘要和上下文预览。
+- **欲望与意愿**：角色独立驱力、内部观察、未决意愿、手动自由活动和经确认的体验反馈。
+- **长期学习**：来源证据、待审经历记忆、偏好估计与时间线、条件化策略、目标进度参考及手动模型整理。
+- **心理状态**：可追溯的模拟情绪、虚拟身体、二阶欲望、内部冲突和有界关联图；只供意愿参考。
 - **MCP 与工具**：保存服务、认证方式、连接、刷新工具、查看 schema、工具启停和确认策略。
 - **插件**：导入 JSON 清单、启停插件、逐工具授权、卸载；单文件前端上限 256 KB。
 - **语音**：浏览器/系统 `speechSynthesis` TTS；STT 优先本机识别，不可用时先弹出远程浏览器识别同意框。
@@ -160,7 +183,7 @@
 
 ## 5. 后端架构和数据模型
 
-- `backend/app/main.py` 是约 1800 行的单文件 FastAPI 应用；数据库初始化、兼容迁移、业务逻辑和 API 路由集中在同一文件。
+- `backend/app/main.py` 仍集中管理认证、核心数据和聊天；欲望系统的各阶段实现已拆到 `desires.py`、`volition.py`、`autonomy.py`、`feedback.py`、`learning.py`、`psychology.py`。
 - SQLite 连接通过全局 `RLock` 串行化，并启用外键；`init_db()` 会创建缺失表并为旧数据库补列。
 - 当前主要表：
   - `users`、`auth_sessions`、`auth_login_attempts`
@@ -171,6 +194,9 @@
   - `mcp_servers`、`mcp_tools`
   - `plugins`、`plugin_tools`
   - `tool_runs`
+  - `drive_states`、`volition_items`、`activity_plans`、`feedback_activities_v4`
+  - `learning_evidence`、`learning_preferences`、`learning_memories`、`learning_strategies`、`learning_goal_notes`
+  - `psychological_snapshots`、`psychological_events`、`second_order_desires`、`psychological_edges`
 - 角色删除必须清理关联的对话、消息、工具运行、记忆、摘要、提示词块和上下文设置；后端拒绝删除最后一个角色。
 - 角色复制只复制角色资料和提示词块，不复制聊天、记忆、摘要、工具运行或模型绑定。
 - `init_db()` 在模块导入时执行；未设置 `YOSAKI_DATA_DIR` 就导入后端模块或启动 Uvicorn 会初始化/迁移真实数据库。测试必须先设置隔离目录，不能直接拿 `data/yosaki.sqlite3` 做恢复或清空试验。
@@ -187,6 +213,7 @@
 | 对话 | `/api/conversations`、`/api/conversations/{id}`、`/messages`、`/export` | 对话列表、重命名、消息、删除和 JSON/Markdown 导出 |
 | 聊天 | `/api/chat/stream`、`/api/chat/regenerate` | 演示/供应商流式聊天和重新生成 |
 | 记忆/上下文 | `/api/memories*`、`/api/characters/{id}/context-settings`、`/api/conversations/{id}/summary`、`/api/chat/context-preview` | 记忆、摘要、历史限制和上下文预览 |
+| 欲望与学习 | `/api/desires/{id}*`、`/api/desires/{id}/learning*`、`/api/desires/{id}/psychology*` | 驱力、意愿、自由活动、反馈、长期学习和模拟心理状态 |
 | MCP | `/api/mcp/servers*`、`/api/mcp/servers/{id}/tools`、`/api/mcp/tools/{id}` | 服务保存、连接、刷新、工具目录和工具启停 |
 | 插件 | `/api/plugins*` | 清单校验、安装、启停、逐工具授权和卸载 |
 | 工具确认 | `/api/chat/tool-runs*` | 单次工具批准/拒绝、结果写入和模型继续 |
@@ -284,7 +311,7 @@
 
 以下事项仍不能宣称已经完成：
 
-- 真实第三方模型和 MCP endpoint 的完整联调，以及不同 provider 的兼容性覆盖。
+- 真实模型覆盖仍不完整：本机授权的 `gpt-6.1-sol` 套餐档案已通过欲望系统隔离调用；其他模型、不同 provider 和第三方 MCP endpoint 的完整联调未完成。
 - 上下文预览中的 token 数是字符启发式估算，缓存状态没有服务商数据支撑；不能据此报告真实计费 token 或缓存命中率。
 - legacy SSE MCP 的完整适配；当前可保存该 transport，但不应把部分兼容逻辑当作全部通过。
 - provider-backed TTS/STT、真实麦克风、移动端和跨浏览器 QA。
@@ -396,3 +423,57 @@ Test-Path .git
 - A real sign-in was completed by the owner through OpenAI's consent page on this local machine. The returned scope included `chatgpt.tokens.use.direct`; YOSAKI listed account-visible models, stored the OAuth credentials in the ignored encrypted `.chatgpt_plan` file, and added a `gpt-6.1-sol` profile. The real model test returned `OK`. A new chat streamed `YOSAKI 已连接。` and provider usage of 116 input, 11 output and 0 cached tokens. This validates this account's local plan route at this time, not other models or production deployment.
 - The initial browser callback arrived after the former 10-minute listener expiry and failed with connection refused. The listener lifetime is now 60 minutes, and the callback page removes its one-time code from the visible URL after processing. If authorization expires, start a fresh attempt from model settings.
 - A SQLite integrity-checked safety snapshot of the pre-connection database and Fernet key was saved under the ignored `data/safety-snapshot-chatgpt-20261023/` directory before starting the real backend. Do not commit, publish, or log it. Real GitHub backups, MCP/provider compatibility, devices, Docker and VPS remain unverified.
+
+## 22. V3 原生欲望系统 — 2026-10-24
+
+- `backend/app/desires.py` 提供每角色默认关闭的模拟驱力、事件去重、隔离模拟、快照、手动唤醒和偏好建议；入口位于 `/desires` 与工作台浮窗。后端版本为 `0.18.0`。技术与 API 边界见 `docs/DESIRES.md`。
+- 聊天只读取话题相关的简短驱力参考；正式事件和活动反馈需要明确提交。意愿由选定模型生成结构化公开摘要，不是模型私人推理，也不自动决定工具权限。
+- 唤醒仅手动启动，按会话限制时长、模型和工具调用。只读工具的分类由 owner 明确确认，第三方 MCP 的副作用无法自动证明；配置变化使预授权失效。其他工具仍逐次确认，普通聊天确认链不变。进程重启不会自动续跑会话。
+- 长期 baseline 只在多次正向反馈后提出小幅建议，由 owner 审核并可回滚。隔离后端测试与临时浏览器检查覆盖主要路径；真实外部服务自主活动、设备及生产部署未验证。不要把这些模拟状态描述为 AI 的真实生理需求。
+
+## 23. 欲望系统 Phase 2 — 2026-10-24
+
+- `backend/app/volition.py` 增加确定性的状态参谋、手动模拟自我观察和纯意愿判断。新接口只保存公开描述和意愿，不调用 MCP 或自动执行活动；原有手动唤醒仍可使用工具。
+- 持续意愿分为候选兴趣、未决意愿和明确承诺的长期目标。未决意愿没有时间驱动的紧迫度、失败或自动清理；用户可显式归档、放弃、重新考虑。旧 `volition_goals` 仍作兼容历史，并以幂等链接映射到新意愿表。
+- 新记录跟随角色隔离、删除和加密 SQLite 备份；角色复制不继承。普通聊天和已有记忆数据格式不变。具体 API、迁移和状态流转见 `docs/VOLITION.md`。后端版本为 `0.19.0`。
+
+## 24. 欲望系统 Phase 3 — 2026-10-24
+
+- `backend/app/autonomy.py` 增加 `free` 模式后端逐步活动；原有 `guided` 单步唤醒保持兼容。仅由用户手动启动，不设定时唤醒。页面关闭后后端进程仍可在原授权时窗内继续，重启后暂停等待用户恢复。
+- 首版 `EnvironmentAdapter` 接入每角色隔离的本地探索室。对象和发现是真实持久化的**场景内模拟状态**，不能描述成现实世界资料。跨唤醒读取意愿、近期计划与发现；不自动增加未决意愿紧迫度，也不把会话结束当成长期目标完成。
+- 通过时间、模型次数、环境及工具动作次数和累计输出 token 预留额限制资源；无可靠价格数据时不估算美元成本。MCP 仍需明确选中，未核实只读、路径参数或其他敏感调用逐次确认。工具超时或重启时结果未知的操作不得自动重放或记为成功。
+- 活动计划、操作、时间线、检查点与待 Phase 4 消费的反馈事件保存于 SQLite，角色删除清理，复制不继承，加密备份纳入。Phase 3 不自动更新驱力或偏好。前端在 `/desires` 及浮窗共用 `FreeActivityPanel.vue`。接口、迁移和恢复规则见 `docs/AUTONOMY.md`；后端版本为 `0.20.0`。
+- 当前自由活动任务运行在单个 Uvicorn worker 内；多进程调度和故障接管未验收。隔离后端验收 16 项、Python 编译、前端构建及隔离浏览器交互通过；浏览器中验证了自由活动启动、环境探索和刷新后历史保留。真实模型、第三方 MCP、设备与部署仍需分别验收。
+
+## 25. 欲望系统 Phase 4 — 2026-10-26
+
+- `backend/app/feedback.py` 按 Phase 3 自由活动中的计划归集实际操作证据，分开保存操作结果、目标结果和会话结束原因。角色可在行动前给出可空乐趣预估；事后模拟体验产生可空评分，预期差只作证据，不直接成为驱力增量。
+- 自由活动启动时可单独预留最多一次体验回顾模型调用和输出 token；前端默认开启，旧 API 省略参数时关闭。模型异常或中断保留客观记录，不自动重放可能已计费的请求。新反馈由 owner 逐项确认，才通过欲望模块受控函数和同一 SQLite 事务更新短期驱力、事件与审计。旧单步／聊天反馈保持原路径。
+- 确定性调节只影响相关驱力的短期激活、满足、抑制，含单次限幅、边界减弱和重复活动衰减；冷却是规划参考而非禁令。长期 baseline、长期目标不自动更改，新兴趣只是候选证据。接口、迁移、公式及 Phase 5 读取边界见 `docs/FEEDBACK.md`。真实模型、MCP、设备和部署仍需单独验收。
+- 2026-10-26 隔离后端回归 20 项通过，另有最新未知结果与恢复变更的定向测试；Python 编译和前端构建通过。隔离浏览器检查了自由活动启动、70→90 的 `+20` 预期差、确认前后驱力变化、浮窗转全页和刷新后持久化。真实服务、设备与 VPS 未验证。
+
+## 26. 欲望系统 Phase 5 — 2026-10-27
+
+- `backend/app/learning.py` 在 Phase 4 反馈正式应用时同事务、无模型地归集证据；旧已应用反馈在读取长期学习页时分批补录。同来源幂等，每会话同主题最多贡献一次偏好权重。没有体验评分不构成负向证据。新表按角色隔离并纳入加密 SQLite 备份，角色复制不继承。
+- 长期偏好和策略评价先形成建议，owner 审阅后才进入 Phase 2／3 的有界上下文。偏好与驱力 baseline 独立；候选经历记忆接受后写入现有 `memories`，并保留来源、事实与模拟解释。撤销偏好派生更新会从仍有效证据重算，原始活动不删除。策略只有明确关联的操作才进入使用统计；目标进度参考不自动改变意愿目标状态。
+- `frontend/src/LearningPanel.vue` 提供全页 `/learning` 和 `/hub?window=learning` 浮窗，包含证据、记忆、偏好时间线、策略和目标进度审阅。复杂整理只能用户手动选择模型及输出 token 上限后发起一次请求；失败不改变正式学习状态。接口、规则、迁移和 Phase 6 读取边界见 `docs/LEARNING.md`。后端版本为 `0.22.0`。真实模型、MCP、设备及部署仍需单独验收。
+- 隔离后端完整回归 22 项通过，最新 Phase 4／5 变更又做定向复测；Python 编译和前端构建通过。隔离浏览器验证了 `/learning` 全页／浮窗、证据追溯、偏好审批、手动修正和回滚时间线。真实模型、MCP、设备和 VPS 尚未验收。
+
+## 27. 欲望系统 Phase 6 — 2026-10-27
+
+- `backend/app/psychology.py` 独立保存角色模拟情绪、虚拟身体状态、二阶欲望、冲突与有界有向关系。只有已返回的 Phase 3 操作结果形成活动负荷；Phase 4 已确认反馈形成体验影响。事件 ID 去重，保存前后快照、结构化评价、规则版本和来源；旧反馈不推断补造心理历史。
+- 自由活动可独立预留最多一次心理情境评价模型调用与 128～1200 输出 token，默认 600。模型失败或无效输出只用确定性规则；评价不能改客观结果。Phase 2／3 只读取有界参考，心理状态不调用工具、不改驱力 baseline 或正式长期学习。二阶认同和抵触可并存，长期化仍走 Phase 5 审阅。
+- `/psychology` 和 `/hub?window=psychology` 共用 `PsychologyPanel.vue`，显示模拟状态、来源、二阶欲望、冲突、关联审阅和隔离模拟。新表纳入加密 SQLite 备份；角色复制不继承经历，删除按外键清理。关系计算最多两层且逐项限幅，驱力目标只生成短期提示。接口、参数和已知限制见 `docs/PSYCHOLOGY.md`。后端版本 `0.23.0`。本次通过 25 项隔离后端测试、Python 编译、前端构建及隔离浏览器全页／浮窗检查；真实模型、MCP、设备和部署仍未验收。
+- `tests/test_phase6.py` 在临时数据库与模拟模型中覆盖去重、矛盾、关系审批与环路、模型评价成功／失败、备份和角色隔离、100／500 次稳定性模拟。真实第三方模型、MCP、设备、Docker 与 VPS 仍需分别验收。
+
+## 28. 欲望系统套餐模型实测 — 2026-10-27
+
+- 真实账户的 `gpt-6.1-sol` 套餐模型在隔离 SQLite／临时角色上验证。欲望系统原先以非流式请求调用该通道，真实接口返回 `Stream must be set to true`；`backend/app/desires.py` 现按官方要求以流式 Responses 读取文本增量并等待 `response.completed`，没有自动切换到付费 API。结构化输出按 Pydantic 模型提供 JSON Schema，仍保留本地校验；自由活动进一步限制当前可引用的意愿、环境动作和工具 ID。
+- 真实调用已通过 Phase 2 观察与纯意愿判断、一次 Phase 3 本地环境成功操作、Phase 4 用户确认反馈后的 Phase 5 手动整理，以及 Phase 6 一次评价。一次 Phase 4 体验回顾返回合法空结果，因此未推断主观评分或驱力增量。真实测试未涉及第三方 MCP、其他模型、真实设备或部署。测试进程的业务数据位于临时目录；正式数据库未用于活动测试，套餐授权文件可能按正常流程刷新。
+
+## 29. 当前项目快照与交付检查 — 2026-10-27
+
+- 主分支准备发布的是现有本地工作台及欲望系统 Phase 1～6 的源码、隔离测试和设计文档。产品入口为 `/`、`/hub` 和 11 个可独立全页打开的功能区；欲望、长期学习、心理状态还共用工作台浮窗。`backend/app/main.py` 的版本号为 `0.23.0`，前端 package 仍为 `0.1.0`，均不表示生产发布。
+- 当前授权边界：角色默认不启用欲望系统；用户手动唤醒并指定时长、模型与操作额度；模型可不行动。MCP 沿用用户确认。正式短期反馈和长期学习建议分别经过用户审阅；模拟心理状态只提供参考，不能直接执行工具或改人格／baseline。
+- 2026-10-27 已通过 25 项隔离后端测试、Python 编译、前端构建、Phase 6 全页／浮窗本地浏览器检查，以及单独的套餐模型真实调用。测试与临时 OAuth 调用不构成生产验收；第三方 MCP、其他模型、真实设备、Docker／VPS 和公网安全仍需单独验证。
+- Git 上传前只暂存源码、测试、README、AGENTS 和设计文档。`data/yosaki.sqlite3`、`.secret_key`、`.chatgpt_plan`、安全快照、日志、`.venv`、依赖、构建和生成的 `.vue.js` 均须保持忽略；推送后检查远端 commit 与本地一致。
