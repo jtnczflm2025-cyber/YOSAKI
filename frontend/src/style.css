@@ -30,3 +30,9 @@
 /* Full-page feature mode reuses the same feature surface without floating geometry. */
 .floating-window.full-page-feature{position:fixed!important;left:235px!important;top:88px!important;right:0!important;bottom:0!important;width:auto!important;height:auto!important;min-width:0;min-height:0;border-radius:0;resize:none;border-right:0;border-bottom:0}.floating-window.full-page-feature .window-header{cursor:default}
 @media(max-width:900px){.floating-window.full-page-feature{left:0!important;top:68px!important;right:0!important;bottom:0!important;width:auto!important;height:auto!important}}
+
+.message-audio-player{display:inline-flex;align-items:center;gap:7px;flex-wrap:wrap;margin-left:8px;font-size:10px;color:#aaa4bd}
+.message-audio-player button{background:none;color:#b8a8ff;padding:2px 4px;font-size:10px;cursor:pointer}
+.message-audio-player button:hover{color:#e3dcff}
+.message-audio-preview{flex-basis:100%;padding:9px;border:1px solid #464054;border-radius:8px;background:#23202e;max-width:600px}
+.message-audio-preview p{white-space:pre-wrap;overflow-wrap:anywhere;margin:5px 0;color:#d3cde1}

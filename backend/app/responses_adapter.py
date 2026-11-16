@@ -1,7 +1,151 @@
 """OpenAI Responses wire format. Only public summaries are exposed to the UI."""
 from __future__ import annotations
 
-from typing import Any
+import json
+from typing import Any, AsyncIterable, AsyncIterator
+
+
+class ResponseSSEDecodeError(ValueError):
+    """A bounded wire-format error; never include raw SSE data in its text."""
+
+    def __init__(self, code: str, event_type: object = None) -> None:
+        super().__init__(code)
+        self.code = code
+        self.event_type = event_type
+
+
+async def iter_sse_events(lines: AsyncIterable[str]) -> AsyncIterator[dict[str, Any]]:
+    """Decode Responses SSE frames, including lines split across transport chunks.
+
+    The caller supplies complete lines (for example, httpx.aiter_lines()). A
+    frame is dispatched only at its blank line. Its event label, when present,
+    must match the JSON type; neither label nor payload is logged here.
+    """
+    label: str | None = None
+    data: list[str] = []
+    size = 0
+    async for line in lines:
+        if not isinstance(line, str) or len(line) > 1_048_576:
+            raise ResponseSSEDecodeError("model_sse_line_invalid", label)
+        if not line:
+            if data:
+                raw = "\n".join(data)
+                if raw == "[DONE]":
+                    return
+                try:
+                    value = json.loads(raw)
+                except (ValueError, TypeError) as exc:
+                    raise ResponseSSEDecodeError("model_sse_json_invalid", label) from exc
+                if not isinstance(value, dict):
+                    raise ResponseSSEDecodeError("model_sse_event_invalid", label)
+                if label is not None and label != value.get("type"):
+                    raise ResponseSSEDecodeError("model_sse_type_mismatch", label)
+                yield value
+            label, data, size = None, [], 0
+            continue
+        if line.startswith(":"):
+            continue
+        field, sep, value = line.partition(":")
+        if not sep:
+            continue
+        if value.startswith(" "):
+            value = value[1:]
+        if field == "event":
+            label = value
+        elif field == "data":
+            size += len(value)
+            if size > 1_048_576:
+                raise ResponseSSEDecodeError("model_sse_event_too_large", label)
+            data.append(value)
+    if data == ["[DONE]"]:
+        return
+    if data:
+        raise ResponseSSEDecodeError("model_sse_unterminated_event", label)
+
+
+# This candidate sends no tools and speaks only public output_text. A metadata
+# envelope can carry answer-display or access controls, so inspect its known
+# fields before treating an empty envelope as a notice. Unknown metadata fails
+# closed; neither its payload nor a notification is public reply text.
+CANDIDATE_NOTICES = frozenset({
+    "response.queued", "response.created", "response.in_progress",
+    "response.output_text.annotation.added",
+    "response.reasoning_summary_part.added",
+    "response.reasoning_summary_part.done",
+    "response.reasoning_summary_text.delta",
+    "response.reasoning_summary_text.done",
+    "response.reasoning_text.delta", "response.reasoning_text.done",
+})
+CANDIDATE_ADAPTED = frozenset({
+    "response.output_item.added", "response.output_item.done",
+    "response.content_part.added", "response.content_part.done",
+    "response.output_text.delta", "response.output_text.done",
+    "response.function_call_arguments.delta",
+    "response.function_call_arguments.done",
+})
+CANDIDATE_TERMINAL = frozenset({
+    "response.completed", "response.failed", "response.incomplete", "error",
+})
+METADATA_STOPS = frozenset({
+    "metadata_safety_buffering", "metadata_model_verification",
+    "metadata_answer_moderation", "metadata_guardian",
+    "metadata_headers", "metadata_unrecognized",
+})
+
+
+def candidate_metadata_boundary(event: dict[str, Any]) -> str | None:
+    """Return a bounded stop category for metadata the Voice path cannot honor."""
+    buffering = event.get("safety_buffering")
+    if buffering is not None and buffering is not False:
+        return "metadata_safety_buffering"
+    if event.get("type") != "response.metadata":
+        return None
+    if event.get("headers") not in (None, {}):
+        # Headers can report a different effective model or turn state.
+        return "metadata_headers"
+    if any(event.get(key) not in (None, {}) for key in
+           ("response", "error", "item", "delta", "text")):
+        return "metadata_unrecognized"
+    metadata = event.get("metadata")
+    if metadata is None or metadata == {}:
+        return None
+    if not isinstance(metadata, dict):
+        return "metadata_unrecognized"
+    if "openai_chatgpt_moderation_metadata" in metadata:
+        return "metadata_answer_moderation"
+    if "openai_verification_recommendation" in metadata:
+        return "metadata_model_verification"
+    if "guardian" in metadata:
+        return "metadata_guardian"
+    if metadata.get("type") == "safety_buffering":
+        return "metadata_safety_buffering"
+    return "metadata_unrecognized"
+
+
+def classify_candidate_event(event: dict[str, Any]) -> str:
+    kind = event.get("type")
+    if not isinstance(kind, str):
+        return "unsupported"
+    boundary = candidate_metadata_boundary(event)
+    if boundary is not None:
+        return boundary
+    if kind == "response.metadata":
+        return "notice"
+    if kind in CANDIDATE_NOTICES:
+        return "notice"
+    if kind in CANDIDATE_TERMINAL:
+        return "terminal"
+    if kind in CANDIDATE_ADAPTED:
+        item = event.get("item") if kind.startswith("response.output_item.") else None
+        part = event.get("part") if kind.startswith("response.content_part.") else None
+        if item is not None and (not isinstance(item, dict) or
+                                 item.get("type") not in {"message", "reasoning", "function_call"}):
+            return "unsupported"
+        if part is not None and (not isinstance(part, dict) or
+                                 part.get("type") not in {"output_text", "reasoning_text"}):
+            return "unsupported"
+        return "adapt"
+    return "unsupported"
 
 
 def endpoint(base_url: str) -> str:

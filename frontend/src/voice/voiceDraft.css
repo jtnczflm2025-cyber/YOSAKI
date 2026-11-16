@@ -1,0 +1,43 @@
+.window-chat .composer-wrap:has(.voice-auto-controls),
+.window-chat .composer-wrap:has(.scribe-draft-isolated) {
+  display: grid;
+  gap: 8px;
+  background: #191821;
+  border-top: 1px solid #35313e;
+}
+
+.voice-auto-controls,
+.scribe-draft-isolated {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 9px;
+  color: #c7c1d6;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.voice-auto-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.voice-auto-controls input { accent-color: #8f7cff; }
+.voice-auto-controls span,
+.scribe-draft-isolated span { color: #aaa4b8; }
+.scribe-draft-isolated span { flex-basis: 100%; }
+
+.voice-auto-controls button,
+.scribe-draft-isolated button {
+  border: 1px solid #51495f;
+  border-radius: 7px;
+  padding: 5px 8px;
+  background: #302a3e;
+  color: #e9e3f4;
+  font-size: 11px;
+}
+
+.voice-auto-controls button:hover,
+.scribe-draft-isolated button:hover { background: #413753; }
