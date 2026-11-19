@@ -1,0 +1,236 @@
+{
+  "direct": [
+    {
+      "path": "YOSAKI_Chat_Enhancement_Development_Plan_v0.1.md",
+      "delivery": "direct",
+      "workspace_sha256": "14f5c94f1e6789159714b35bb5cc9f8964c2cd67a6daebfb70e43e73485a8842",
+      "normalized_lf_sha256": "14f5c94f1e6789159714b35bb5cc9f8964c2cd67a6daebfb70e43e73485a8842"
+    },
+    {
+      "path": "YOSAKI_Chat_Enhancement_Development_Plan_v0.2.md",
+      "delivery": "direct",
+      "workspace_sha256": "7ee4e95863a5c9b923a7839ec9fe18a3a301a15643020927c90b70d4154a7bc8",
+      "normalized_lf_sha256": "6743b2b545d0057cd34f63ad37c3742bde1dab77de48b2a66c90c7ca59f82e25"
+    },
+    {
+      "path": "backend/app/chat_api.py",
+      "delivery": "direct",
+      "workspace_sha256": "656e0cd86cb93cae182121a8ccbfc6171c187e5fa4a06f819f1c9ccc5b7bad55",
+      "normalized_lf_sha256": "2ee9c84a63411a086a15b762610c416e0b9365720968ff82cca7fbda36919ab9"
+    },
+    {
+      "path": "backend/app/chat_attachment_worker.py",
+      "delivery": "direct",
+      "workspace_sha256": "dd69d8e9af9d822031382af2b55c20a349ff7c5bd764eb881161ac4716eb7dca",
+      "normalized_lf_sha256": "f9eb3f83ed5ca287dfa4d9eb5b48311db14aec4629da38275a7bf8e7811f7250"
+    },
+    {
+      "path": "backend/app/chat_attachments.py",
+      "delivery": "direct",
+      "workspace_sha256": "1b1d64bb62742ba0d276074b7d033f25213fc8de8e3b4bdfe546ea1aa4e2444a",
+      "normalized_lf_sha256": "e8c3a56db79ab0a03e80787d96f6a3c1bb8ca9c8c259e3ccec190d4c200374ae"
+    },
+    {
+      "path": "backend/app/chat_auxiliary.py",
+      "delivery": "direct",
+      "workspace_sha256": "2d1efe6ffb33b4f60d8414ac0304dc5fb8b56b99e8ebb746d494860bfe276482",
+      "normalized_lf_sha256": "49ef46ced4dc5a896928f48219aea3d59c4db946eda14fb209818c9e59035659"
+    },
+    {
+      "path": "backend/app/chat_context.py",
+      "delivery": "direct",
+      "workspace_sha256": "99011e80b01158861578ce048f3e33ba49231ad4f0aa182f9f5354818b4665a8",
+      "normalized_lf_sha256": "4267d191bc169c8aebb8eb4dda0c0e2b5f0f52e4b7b9f2deb98fdee623a425d5"
+    },
+    {
+      "path": "backend/app/chat_history.py",
+      "delivery": "direct",
+      "workspace_sha256": "2079396bf21883ad086dbb09cd0a22581ba1048cf9602c31f4e923c01ab2bc18",
+      "normalized_lf_sha256": "fbeb08e5dd0038a4123f2ef505dde8b8f7e103b4e131868524ab88e5056c4f90"
+    },
+    {
+      "path": "backend/app/chat_protocol.py",
+      "delivery": "direct",
+      "workspace_sha256": "999700809db0aba4d054f209f1ca796c5423c1264c0e341821b93dc184d02c6d",
+      "normalized_lf_sha256": "e916441e417b082703ea631221dc2eead466bc8c9421a01d9445b624370eb39a"
+    },
+    {
+      "path": "backend/app/chat_requests.py",
+      "delivery": "direct",
+      "workspace_sha256": "b6d72388a0f80da0e4a5b904e75b34a0fb9e9efd7053b3039fe295f67b3fd9c5",
+      "normalized_lf_sha256": "be2c97a0208beeb82973ca5fd44fce793013653025caeeb59c8e5f47d202a5d4"
+    },
+    {
+      "path": "backend/app/chat_schema.py",
+      "delivery": "direct",
+      "workspace_sha256": "fe5890d3266cb4e6d4662908ac98efd5b27dc8e1fb05300d67601e92aa7e5c3a",
+      "normalized_lf_sha256": "dc38b231254d61d1de3ddd9199c5700a55826405f88781f74d10a95ec6b2e6c4"
+    },
+    {
+      "path": "backend/app/chat_upload_limit.py",
+      "delivery": "direct",
+      "workspace_sha256": "eb592fd2781061e15e34054e655d59d8eee470f72362ae801a612c8e67a77e5d",
+      "normalized_lf_sha256": "785f4ca17de8bc467f0d4fdd7744d3e400283c9d04a35457a29e0adf720bac40"
+    },
+    {
+      "path": "backend/app/chat_web.py",
+      "delivery": "direct",
+      "workspace_sha256": "9942dbd8d99551c305a3d8929b897fd5c7b29733e87566d32c01fabf4686f7b3",
+      "normalized_lf_sha256": "26493a463e7349dc5a7eb6a59e4c56d73502f85eb041cc474394d11923565362"
+    },
+    {
+      "path": "backend/app/model_capabilities.py",
+      "delivery": "direct",
+      "workspace_sha256": "19ec47e2f2e24cbc7a8b942bd72fddc4fe47b0858e5ff2b3acf05767bc089f19",
+      "normalized_lf_sha256": "bdcda055e7953f2fca1a3ee508c899e567f813619736127ebdb28bf88102aa62"
+    },
+    {
+      "path": "docs/CHAT_DAILY_LOAD_APPROVAL.md",
+      "delivery": "direct",
+      "workspace_sha256": "c8c837bb12331b15d4b8014b0f8466027ebd88484bb521c2900590e4b18d5d30",
+      "normalized_lf_sha256": "d5b954f34e4a7b8edaf8a4acaa19f7e89ce17a7bcbd3b8d7c4a5419cf092b5a5"
+    },
+    {
+      "path": "docs/CHAT_ENHANCEMENT_CANDIDATE.md",
+      "delivery": "direct",
+      "workspace_sha256": "25c7041d5db8217c3b32234ee887fa961da879165576c9a656a2a709e30557c6",
+      "normalized_lf_sha256": "6f2e0aabc1d13133ed947a0b9bbf30cdc101a656f285cf188db97e2503a01b50"
+    },
+    {
+      "path": "docs/CHAT_ENHANCEMENT_FOLLOWUP.md",
+      "delivery": "direct",
+      "workspace_sha256": "003a8dc0178a2940be1266161286dc3e6d45efba6886ff0a63f9b9893e433d92",
+      "normalized_lf_sha256": "49771b50bf942d6ecedb8cadb3d20d38c609ec211909e8d37d995a726d75e90f"
+    },
+    {
+      "path": "docs/CHAT_ENHANCEMENT_HANDOFF.md",
+      "delivery": "direct",
+      "workspace_sha256": "3daf867721fe162622253cd025b269ebdd3defe991b4af814483b141316ae82d",
+      "normalized_lf_sha256": "49f36cf67bfce25c26b1372ebad453c117281a53edd7d2e2fc77a57070c53ec2"
+    },
+    {
+      "path": "docs/CHAT_ENHANCEMENT_LOAD_CHECKLIST.md",
+      "delivery": "direct",
+      "workspace_sha256": "add63dd8e53d5f85a62b75819caeba9fcf2f225d2b8f74749cb5167b33ac2279",
+      "normalized_lf_sha256": "0716f9fb41de5c8bb9887e5515af4e84c73bc423d3807a9243e0a5c29a18dfce"
+    },
+    {
+      "path": "docs/MODEL_REASONING_SETTINGS_FIX.md",
+      "delivery": "direct",
+      "workspace_sha256": "c176e989b13257f5ed340f6a2761255a929072b118f7aeb3bf7127716429b30f",
+      "normalized_lf_sha256": "be3774a13b635018740d6a94e27f6fcd7f56de47724c03d5edd7630c0a94fa34"
+    },
+    {
+      "path": "docs/chat-enhancement/ACCEPTANCE_SUMMARY.json",
+      "delivery": "direct",
+      "workspace_sha256": "5acea34a920d93024f53894668c6dd4b11e108ea9cb669cd56423d7c0073f839",
+      "normalized_lf_sha256": "65213073c7db5d496bf261af3740d5d4e26b8b3c19d5825abc719d1449141537"
+    },
+    {
+      "path": "frontend/src/chat/AttachmentInput.vue",
+      "delivery": "direct",
+      "workspace_sha256": "487973c866357e2cc73de0b2869bb8ddb274256f92c55c053c32928520dd6f59",
+      "normalized_lf_sha256": "7ba751a1e5d38ec6a866be4d675fbda1b2daec7973ceec0b260c28eb125d8324"
+    },
+    {
+      "path": "frontend/src/chat/ChatEnhancementPanel.vue",
+      "delivery": "direct",
+      "workspace_sha256": "180b507d5b2fdc1c368c824b77e0c4e6831fa0f752aaf250f7fd77c99f37d2bc",
+      "normalized_lf_sha256": "22d9cd0f4cc487dc61265cc8c3b3ccc32d338b98583483f525290fed173531c9"
+    },
+    {
+      "path": "frontend/src/chat/chatEnhancement.css",
+      "delivery": "direct",
+      "workspace_sha256": "e32e1a2591f223c9d9848e9a1f4cfb66ab00bb10ec1f318ab94b193affb84fc4",
+      "normalized_lf_sha256": "88c1e8708ee56a4f6a06d1bf839038597045591fdd937168ea65c2bd745a2a14"
+    },
+    {
+      "path": "frontend/src/chat/nextRequestSettings.ts",
+      "delivery": "direct",
+      "workspace_sha256": "bc986a0d2a70d767f7d9b19bbc9e3a0624b09c4c53997621893137c62ee559d5",
+      "normalized_lf_sha256": "bc986a0d2a70d767f7d9b19bbc9e3a0624b09c4c53997621893137c62ee559d5"
+    },
+    {
+      "path": "frontend/src/chat/usagePresentation.ts",
+      "delivery": "direct",
+      "workspace_sha256": "5f524ecd8d4eda469a25c454e8a16a9dadb9288e5fec046b62905a19d03bd3ae",
+      "normalized_lf_sha256": "d7dd88c02787c180afd75931495f011fa169ae73824063520b37b6755b5e4954"
+    },
+    {
+      "path": "scripts/chat_browser_fixture.py",
+      "delivery": "direct",
+      "workspace_sha256": "03d9ba987643cc433758cc872dec80b5939af12f9db038d5b7665d61de2527ca",
+      "normalized_lf_sha256": "a0af57643aa5ecf8d26f432c3f1aa746b06aa8cf0d98514f29ebd94f6ad7fa1d"
+    },
+    {
+      "path": "scripts/chat_readonly_archive.py",
+      "delivery": "direct",
+      "workspace_sha256": "6131a5605e3f850b49ebbc9c57caa08dd196afb0f4f875121bc46ed893b728e5",
+      "normalized_lf_sha256": "b0b5be21227a520156a08b6919af6cc0e7a0a227e7e9549c1fe7eb09269bfdb4"
+    },
+    {
+      "path": "scripts/chat_schema_candidate.py",
+      "delivery": "direct",
+      "workspace_sha256": "1c9089a287512c5cd5c1efb32cccebec2783bf71c4f048f2cf61be425f52c551",
+      "normalized_lf_sha256": "af74e15f68f26f8ed13fd4dbe64f20581f2fa993ddbca2c087a8006a2735aca4"
+    },
+    {
+      "path": "scripts/model_settings_browser_fixture.py",
+      "delivery": "direct",
+      "workspace_sha256": "e7a2a73aa22c79adf754f01b2c861966f677e9400c0715b72042ad26ed9ee275",
+      "normalized_lf_sha256": "8b8638efe3d7b61ddf13ca119152f008e6567c890fd8b8c00c9c8d3dab607594"
+    },
+    {
+      "path": "scripts/run_chat_isolated_tests.py",
+      "delivery": "direct",
+      "workspace_sha256": "a04cc070f86a4f9f775c75128996c4cf75c902b57665abceb434c5389c9c5d26",
+      "normalized_lf_sha256": "329a72e8b8528b028bee02d3169113d313ae354e618036b30123a91f7d3cd51f"
+    },
+    {
+      "path": "scripts/test_chat_usage_presentation.mjs",
+      "delivery": "direct",
+      "workspace_sha256": "bdc38fa174dfbe0abb4a2afa482673a20232a27d22e2b488b90c3c68a569dbd2",
+      "normalized_lf_sha256": "e4fbff40b04ab193ffecfdac0db98afb4fb575b30cb06ca34dd68d3d915a8c5d"
+    },
+    {
+      "path": "scripts/test_model_settings_ui.mjs",
+      "delivery": "direct",
+      "workspace_sha256": "4a1b8c5a9dd0fdd16701f77a1346ac4c73d5c25d21661d0d669d09fd8ed75247",
+      "normalized_lf_sha256": "9aa8c5efd8e0a9409c012170aea72796279256974d934a88c85bbf2bd7e6aa23"
+    },
+    {
+      "path": "scripts/test_next_request_settings.mjs",
+      "delivery": "direct",
+      "workspace_sha256": "4215a10403c3aea05dfda2dfa88575d64d37cecdb0050c28d7989beb987131b1",
+      "normalized_lf_sha256": "4215a10403c3aea05dfda2dfa88575d64d37cecdb0050c28d7989beb987131b1"
+    },
+    {
+      "path": "tests/test_chat_branch_recall.py",
+      "delivery": "direct",
+      "workspace_sha256": "4a8532fb498a7ea1e748f36fd36fc926eea1febe65d8c50d489207f9add0416f",
+      "normalized_lf_sha256": "bcec88e051b685fd16c393652118e6a2a35e6c48ae7cf0dd254328fdd0ecefe8"
+    },
+    {
+      "path": "tests/test_chat_enhancement.py",
+      "delivery": "direct",
+      "workspace_sha256": "ac327822db73925fa8767a3761743321b1c020edd4efa03fd2dab8416e08d500",
+      "normalized_lf_sha256": "a610e12c4b29aa3bac4000342ce07a11dedaa573283b719d843ddfa988d66e7e"
+    },
+    {
+      "path": "tests/test_chat_web.py",
+      "delivery": "direct",
+      "workspace_sha256": "b83e6765acfc4678306269a82fce8373de2d55ee911c96fff9e813737f36945c",
+      "normalized_lf_sha256": "c1b8736f07d5a2c68891b956c8a4bc784c912707341d6f657ec142469b260534"
+    },
+    {
+      "path": "tests/test_model_settings_persistence.py",
+      "delivery": "direct",
+      "workspace_sha256": "c513a4b30a1483af41aa5afd3b74ea6297d5b8768e7a6eb1d2a20f0e3ab01449",
+      "normalized_lf_sha256": "81142b6ec03a9622e9f23d95a41bf6140d51c3e37eaa702989db7f2fde725cfc"
+    }
+  ],
+  "shared_files": 21,
+  "shared_patch": "chat-shared-integration.patch",
+  "local_final_audit_files": 55,
+  "git_text_normalization": "direct text files use Git LF normalization; patch has -text attribute"
+}

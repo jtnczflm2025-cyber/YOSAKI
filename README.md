@@ -1,5 +1,10 @@
 # YOSAKI
 
+<!-- chat-enhancement-current -->
+> **聊天增强当前状态（2026-11-19）：已实现并加载日常。** 消息操作、版本／分支、请求详情、附件、上下文与用量统计，以及永久模型回显和单次设置刷新保留已完成。入口：[最终交接](docs/CHAT_ENHANCEMENT_HANDOFF.md)／[当前交付](docs/CHAT_ENHANCEMENT_CANDIDATE.md)／[后续清单](docs/CHAT_ENHANCEMENT_FOLLOWUP.md)。当前8000／5173已恢复为200，原进程退出原因未知；同期Voice接线保留且AI用户开关未开启。历史“仅候选／待加载”按其原版本理解；各轮测试不累计或冒充最新源码全量。Git专项分支是有明确本机基线依赖的增量交付，不是完整日常快照。
+<!-- /chat-enhancement-current -->
+
+
 YOSAKI is currently a local development prototype. It is **not ready for public internet/VPS exposure**.
 
 ## Start frontend (PowerShell)

@@ -1,0 +1,5 @@
+# Integration patch syntax includes intentional blank context lines.
+docs/chat-enhancement/*.patch -text whitespace=-blank-at-eol,-blank-at-eof,cr-at-eol
+# Preserve the original plans' intentional Markdown hard line breaks.
+YOSAKI_Chat_Enhancement_Development_Plan_v0.1.md whitespace=-blank-at-eol
+YOSAKI_Chat_Enhancement_Development_Plan_v0.2.md whitespace=-blank-at-eol

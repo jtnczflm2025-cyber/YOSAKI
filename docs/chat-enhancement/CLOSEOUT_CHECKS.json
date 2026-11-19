@@ -1,0 +1,38 @@
+{
+  "staged_files": 47,
+  "python_syntax_files": 22,
+  "new_markdown_links": 19,
+  "secret_findings": [],
+  "forbidden_artifacts": 0,
+  "direct_index_hashes": 38,
+  "shared_patch_sha256": "691e9d29bc93e99b0f6fda4e85af6b8921e3367f050a5813b61c8cfdf3d4fad7",
+  "historical_summary_verified": true,
+  "unchanged_loaded_files": 46,
+  "parallel_voice_deltas_preserved": [
+    "backend/app/main.py",
+    "frontend/src/App.vue",
+    "scripts/yosaki_runtime.py"
+  ],
+  "parallel_compatibility_tests_passed": 5,
+  "parallel_build": "passed",
+  "overlay_guards": [
+    {
+      "existing_target": true,
+      "rejected_without_write": true
+    },
+    {
+      "existing_target": false,
+      "rejected_without_write": true
+    }
+  ],
+  "whitespace_check": true,
+  "health": 200,
+  "frontend": 200,
+  "new_provider_requests": 0,
+  "database_migrations_by_this_task": 0,
+  "runtime_starts_by_this_task": 0,
+  "shared_overlay_reconstructed_byte_exact": 21,
+  "direct_payload_fingerprints": 38,
+  "ai_owner_opt_in": false,
+  "runtime_recovery_note": "recovery separately authorized; duplicate start blocked after parallel process became healthy; no startup/migration by this thread"
+}

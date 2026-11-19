@@ -1,0 +1,178 @@
+{
+  "date": "2026-11-19",
+  "input_kind": "synthetic_only",
+  "new_requests_in_closeout": 0,
+  "real_test_model": "gpt-6.1-sol",
+  "api_requests": 6,
+  "subscription_requests": 1,
+  "oauth_refreshes": 1,
+  "rows": [
+    {
+      "item": "A1",
+      "status": "completed",
+      "usage": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 83,
+        "output": 115,
+        "reasoning": 40
+      },
+      "public_reasoning_summary_returned": true,
+      "cost_usd_estimate": 0.001316
+    },
+    {
+      "item": "A2",
+      "status": "completed",
+      "usage": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 83,
+        "output": 58,
+        "reasoning": 0
+      },
+      "public_reasoning_summary_returned": false,
+      "cost_usd_estimate": 0.000746
+    },
+    {
+      "item": "A3",
+      "status": "completed",
+      "usage": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 148,
+        "output": 17,
+        "reasoning": 0
+      },
+      "public_reasoning_summary_returned": false,
+      "cost_usd_estimate": 0.000466
+    },
+    {
+      "item": "B1",
+      "status": "completed",
+      "usage": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 102,
+        "output": 21,
+        "reasoning": 0
+      },
+      "public_reasoning_summary_returned": false,
+      "cost_usd_estimate": 0.000414
+    },
+    {
+      "item": "C1",
+      "status": "completed",
+      "usage": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 56,
+        "output": 28,
+        "reasoning": 0
+      },
+      "public_reasoning_summary_returned": false,
+      "cost_usd_estimate": 0.000392
+    },
+    {
+      "item": "C2",
+      "status": "completed",
+      "usage": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 148,
+        "output": 86,
+        "reasoning": 0
+      },
+      "public_reasoning_summary_returned": false,
+      "cost_usd_estimate": 0.001156
+    },
+    {
+      "item": "D",
+      "status": "completed",
+      "usage": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 41,
+        "output": 9,
+        "reasoning": 0
+      },
+      "public_reasoning_summary_returned": false,
+      "cost_usd_estimate": null
+    }
+  ],
+  "api_total_estimate_usd": 0.00449,
+  "cost_note": "historical usage-based estimate, not invoice; subscription currency cost unknown",
+  "A3_latest_correction": true,
+  "B1_image_only_local_scoring_passed": true,
+  "C2_selected_candidate_only_and_final_turn_preserved": true,
+  "D_initial_local_attempt_preserved": true,
+  "D_initial_external_transmissions": 0,
+  "W_admission": "DNS/IP rejected",
+  "W_actual_GET": 0,
+  "test_versions": [
+    {
+      "label": "P5 full",
+      "manifest_name": "P5_FULL_REGRESSION_SOURCE.json",
+      "manifest_sha256": "b310332e33641cc45fb5e30758c9b0645b168abd1b4df4a9057c0fe597b4956b",
+      "counts": {
+        "passed": 1509,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "label": "P5 late",
+      "manifest_name": "P5_FINAL_FILES.json",
+      "manifest_sha256": "446d7d72dcda5338469e87ef3597b1842413bbcf2e270704ef58cacc95778616",
+      "counts": {
+        "passed": 91,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "label": "real-final targeted",
+      "manifest_name": "REAL_FINAL_FILES.json",
+      "manifest_sha256": "3ce946591eda0a5e3b9531bfa2e819ba80be09723f0f002d0ecf378c225915de",
+      "counts": {
+        "passed": 43,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "label": "daily-load preparation",
+      "manifest_name": "LOAD_FINAL_FILES.json",
+      "manifest_sha256": "8f3f8eae4891f504cb8209e82d31945b75cce452ce7609ff752b1c63455b72b9",
+      "counts": {
+        "merge_passed": 54,
+        "voice_stage_passed": 7,
+        "voice_timing_passed": 15,
+        "usage_assertions": 10,
+        "display_scenarios": 3
+      }
+    },
+    {
+      "label": "model editor fix",
+      "manifest_name": "LOAD_RESULT.json",
+      "manifest_sha256": "048aacb7e8d5f3d600c973f3719a32d267b7ba94f90878df4564ecd95f0a05e3",
+      "counts": {
+        "browser": 12,
+        "backend": 3
+      }
+    },
+    {
+      "label": "next request settings",
+      "manifest_name": "FROZEN_FILES.json",
+      "manifest_sha256": "d8bb759ce31244ce50e90597a5b82895d6460a5dbc106e78425c01622cf3f4cc",
+      "counts": {
+        "browser_assertions": 70,
+        "compatibility_ui": 12,
+        "state_cases": 17,
+        "backend": 3
+      }
+    }
+  ]
+}
