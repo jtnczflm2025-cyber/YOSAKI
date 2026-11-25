@@ -1,0 +1,50 @@
+.window-chat .composer-wrap:has(.voice-auto-controls),
+.window-chat .composer-wrap:has(.scribe-draft-isolated) {
+  display: grid;
+  gap: 8px;
+  background: var(--ui-surface);
+  border-top: 1px solid var(--ui-line-soft);
+}
+
+.voice-auto-controls,
+.scribe-draft-isolated,
+.voice-call-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 9px;
+  color: var(--ui-ink);
+  font-size:13px;
+  line-height: 1.4;
+}
+
+.voice-auto-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.voice-auto-controls input { accent-color: #8f7cff; }
+.voice-auto-controls span,
+.scribe-draft-isolated span,
+.voice-call-controls span { color: var(--ui-muted); }
+.scribe-draft-isolated span { flex-basis: 100%; }
+.voice-call-controls small { flex-basis: 100%; color: var(--ui-muted); }
+.voice-call-controls label { display: inline-flex; align-items: center; gap: 6px; }
+.voice-call-controls .scribe-draft-isolated { flex-basis: 100%; }
+
+.voice-auto-controls button,
+.scribe-draft-isolated button,
+.voice-call-controls button {
+  border: 1px solid var(--ui-line-soft);
+  border-radius: 7px;
+  padding: 5px 8px;
+  background: var(--ui-raised);
+  color: var(--ui-ink);
+  font-size:13px;
+}
+
+.voice-auto-controls button:hover,
+.scribe-draft-isolated button:hover,
+.voice-call-controls button:hover { background: var(--ui-raised); }

@@ -12,10 +12,13 @@
     "dompurify": "latest",
     "lucide-vue-next": "latest",
     "marked": "latest",
+    "three": "^0.187.0",
+    "three-globe": "^2.45.6",
     "vite": "latest",
     "vue": "latest"
   },
   "devDependencies": {
+    "@types/three": "^0.187.0",
     "typescript": "^5.7.2",
     "vue-tsc": "^2.2.0"
   }

@@ -1,0 +1,48 @@
+:root {
+  color-scheme: light;
+  --ui-bg: #e5e8ed;
+  --ui-surface: #f8f9fb;
+  --ui-raised: #eef1f5;
+  --ui-ink: #242b34;
+  --ui-muted: #56616e;
+  --ui-line: #b5bec9;
+  --ui-line-soft: #d3d9e1;
+  --ui-primary: #303944;
+  --ui-on-primary: #fff;
+  --ui-accent: #536c89;
+  --ui-accent-bg: #e0e7ef;
+  --ui-success: #28654d;
+  --ui-warning: #875521;
+  --ui-danger: #a83845;
+  --ui-glass: rgb(240 244 249 / 73%);
+  --ui-hero-glass: rgb(238 243 249 / 38%);
+  --ui-highlight: rgb(255 255 255 / 90%);
+  --ui-shadow: 0 16px 44px rgb(42 53 69 / 12%);
+  --ui-shadow-small: 0 4px 16px rgb(42 53 69 / 9%);
+  --ui-font: "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans CJK JP", "Yu Gothic", system-ui, sans-serif;
+  --ui-reading-size: 17px;
+  --ui-reading-leading: 1.75;
+  --ui-reading-width: 860px;
+  --ui-radius-control: 12px;
+  --ui-radius-panel: 20px;
+  --ui-radius-window: 28px;
+  --ui-space-1: 4px; --ui-space-2: 8px; --ui-space-3: 12px; --ui-space-4: 16px;
+  --ui-space-6: 24px; --ui-space-8: 32px; --ui-space-12: 48px; --ui-space-16: 64px;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ui-bg: #171b21; --ui-surface: #232830; --ui-raised: #2d333c;
+  --ui-ink: #edf0f4; --ui-muted: #b4bdc8; --ui-line: #697583; --ui-line-soft: #424c59;
+  --ui-primary: #dde3eb; --ui-on-primary: #20262e;
+  --ui-accent: #abc3df; --ui-accent-bg: #354252;
+  --ui-success: #97d6b8; --ui-warning: #e8bd86; --ui-danger: #ffacb5;
+  --ui-glass: rgb(40 48 59 / 85%); --ui-hero-glass: rgb(33 42 54 / 66%);
+  --ui-highlight: rgb(220 233 250 / 38%);
+  --ui-shadow: 0 16px 44px rgb(0 0 0 / 26%); --ui-shadow-small: 0 4px 16px rgb(0 0 0 / 20%);
+}
+html { font-family: var(--ui-font); color: var(--ui-ink); background: var(--ui-bg); }
+:lang(ja) { font-family: "Yu Gothic", "Hiragino Kaku Gothic ProN", "Noto Sans CJK JP", var(--ui-font); }
+button, input, textarea, select { font-family: inherit; }
+button, a, input, textarea, select, summary { -webkit-tap-highlight-color: transparent; }
+:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 4px; }
+::selection { background: var(--ui-accent-bg); color: var(--ui-ink); }

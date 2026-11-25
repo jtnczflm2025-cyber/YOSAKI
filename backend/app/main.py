@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import base64
+import binascii
 import hashlib
 import hmac
 import secrets
@@ -13,6 +14,7 @@ import struct
 import tempfile
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone, timedelta
 import math
 from pathlib import Path
@@ -21,12 +23,15 @@ from typing import Any, AsyncIterator, Literal
 from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 from jsonschema import ValidationError, SchemaError, validators
+
+from . import memory_authority, chat_schema, chat_history, chat_requests, model_capabilities, chat_context, chat_attachments, chat_web, chat_protocol
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = Path(os.environ["YOSAKI_DATA_DIR"]).expanduser().resolve() if os.environ.get("YOSAKI_DATA_DIR") else ROOT / "data"
@@ -34,7 +39,7 @@ DATA.mkdir(parents=True, exist_ok=True)
 DB = DATA / "yosaki.sqlite3"
 SECRET_FILE = DATA / ".secret_key"
 
-app = FastAPI(title="YOSAKI API", version="0.23.0")
+app = FastAPI(title="YOSAKI API", version="0.24.0")
 ALLOWED_ORIGINS=[origin.strip() for origin in os.getenv("YOSAKI_ALLOWED_ORIGINS","http://localhost:5173,http://127.0.0.1:5173").split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
@@ -123,6 +128,24 @@ class ChatInput(BaseModel):
     model: str = "YOSAKI · demo"
     model_profile_id: int | None = None
     reuse_last_user: bool = False
+    target_message_id: int | None = None
+    expected_head: int | None = None
+    overrides: dict[str, Any] = Field(default_factory=dict)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=8)
+    quote: dict[str, Any] | None = None
+    chronicle_supplement_max_microusd: int | None = Field(default=None, strict=True, ge=1, le=37000)
+    chronicle_supplement_wait_seconds: int = Field(default=12, strict=True, json_schema_extra={'enum': [12, 30]})
+
+    @field_validator('chronicle_supplement_wait_seconds')
+    @classmethod
+    def valid_chronicle_wait(cls, value):
+        if value not in (12, 30):
+            raise ValueError('补查等待上限只支持12或30秒')
+        return value
+
+    voice_auto_read_requested: bool = False
+    voice_call_id: str | None = None
+    voice_call_turn_id: str | None = None
 
 class PromptBlockInput(BaseModel):
     name: str = Field(min_length=1, max_length=120)
@@ -235,6 +258,21 @@ def get_fernet() -> Fernet:
     if not SECRET_FILE.exists():
         SECRET_FILE.write_bytes(Fernet.generate_key())
     return Fernet(SECRET_FILE.read_bytes())
+
+
+def memory_cursor_key() -> bytes | None:
+    """Derive a stable, domain-separated cursor key from the local credential key."""
+    try:
+        get_fernet()  # Existing persistent-key initialization; never an ephemeral fallback.
+        encoded = os.getenv("YOSAKI_SECRET_KEY")
+        material = (encoded.encode() if encoded else SECRET_FILE.read_bytes())
+        raw = base64.urlsafe_b64decode(material)
+        if len(raw) != 32:
+            return None
+        return HKDF(algorithm=hashes.SHA256(), length=32, salt=None,
+                    info=b"YOSAKI-Memory-V2-cursor-signing-v2").derive(raw)
+    except (OSError, ValueError, TypeError, binascii.Error):
+        return None
 
 
 def encrypt_secret(value: str) -> str:
@@ -416,6 +454,9 @@ def init_db() -> None:
                 tool_call_id TEXT,
                 tool_name TEXT,
                 tool_batch_status TEXT,
+                origin_user_message_id INTEGER,
+                origin_user_content_sha256 TEXT,
+                origin_character_id INTEGER,
                 created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS model_profiles (
@@ -574,7 +615,7 @@ def init_db() -> None:
         model_columns={row[1] for row in db.execute("PRAGMA table_info(model_profiles)").fetchall()}
         if "reasoning_effort" not in model_columns:
             db.execute("ALTER TABLE model_profiles ADD COLUMN reasoning_effort TEXT")
-        for column, sql_type in (("tool_calls_json", "TEXT"), ("tool_call_id", "TEXT"), ("tool_name", "TEXT"), ("tool_batch_status", "TEXT"), ("reasoning_content", "TEXT"), ("monologue_content", "TEXT"), ("reasoning_source", "TEXT"), ("generation_status", "TEXT"), ("usage_json", "TEXT"), ("provider_state_json", "TEXT"), ("imported_tool_runs_json", "TEXT")):
+        for column, sql_type in (("tool_calls_json", "TEXT"), ("tool_call_id", "TEXT"), ("tool_name", "TEXT"), ("tool_batch_status", "TEXT"), ("origin_user_message_id", "INTEGER"), ("origin_user_content_sha256", "TEXT"), ("origin_character_id", "INTEGER"), ("reasoning_content", "TEXT"), ("monologue_content", "TEXT"), ("reasoning_source", "TEXT"), ("generation_status", "TEXT"), ("usage_json", "TEXT"), ("provider_state_json", "TEXT"), ("imported_tool_runs_json", "TEXT")):
             if column not in message_columns:
                 db.execute(f"ALTER TABLE messages ADD COLUMN {column} {sql_type}")
         context_columns = {row[1] for row in db.execute("PRAGMA table_info(context_settings)").fetchall()}
@@ -587,6 +628,7 @@ def init_db() -> None:
         for column, sql_type in (("conversation_id", "INTEGER"), ("assistant_message_id", "INTEGER"), ("provider_call_id", "TEXT"), ("model_profile_id", "INTEGER"), ("plugin_tool_id", "INTEGER"), ("plugin_name", "TEXT"), ("display_name", "TEXT")):
             if column not in tool_run_columns:
                 db.execute(f"ALTER TABLE tool_runs ADD COLUMN {column} {sql_type}")
+        chat_schema.install(db)
         if db.execute("SELECT COUNT(*) FROM characters").fetchone()[0] == 0:
             stamp = now()
             cursor = db.execute(
@@ -616,6 +658,11 @@ def init_db() -> None:
             )
         from . import desires
         desires.init_db(db)
+        from . import memory_v2_schema
+        memory_v2_schema.init_db(db)
+        from .voice import config as voice_config, storage as voice_storage
+        if voice_config.enabled():
+            voice_storage.init_db(db)
 
 
 SESSION_COOKIE = "yosaki_session"
@@ -749,6 +796,57 @@ def auth_logout(request: Request, response: Response):
 
 init_db()
 
+from .voice.router import make_router as make_voice_router
+app.include_router(make_voice_router(connect))
+
+# Optional AI expression product routes. No schema installation or startup dispatch.
+from .voice.ai_daily import install as install_voice_ai_http
+async def _voice_ai_token(profile_id):
+    profile=_voice_ai_profile(profile_id)
+    if profile['protocol']=='chatgpt_plan':
+        from . import chatgpt_plan
+        return await chatgpt_plan.access_token(allow_refresh=False)
+    return decrypt_secret(profile['api_key_encrypted'])
+def _voice_ai_profile(profile_id):
+    with connect() as db:
+        row=db.execute('SELECT * FROM model_profiles WHERE id=?',(profile_id,)).fetchone()
+    return dict(row) if row else {}
+app.state.voice_ai_http=install_voice_ai_http(app,connect,_voice_ai_profile,_voice_ai_token,
+    lambda: os.getenv('ELEVENLABS_API_KEY','').strip())
+
+if (os.getenv("YOSAKI_VOICE_CONTINUOUS_ISOLATED", "0") == "1" or
+        os.getenv("YOSAKI_VOICE_CONTINUOUS_DAILY_ENABLED", "0") == "1"):
+    from .voice.continuous_call import install as install_voice_continuous
+    app.state.voice_continuous = install_voice_continuous(app, connect)
+from .voice.realtime_product import install as install_voice_v4_output
+app.state.voice_v4_output = install_voice_v4_output(
+    app, connect, current_session, ALLOWED_ORIGINS,
+    getattr(app.state, "voice_continuous", None))
+if os.getenv("YOSAKI_V4_DYNAMIC_CHAT_ISOLATED", "0") == "1":
+    from .voice.realtime_dynamic_product import install as install_voice_v4_dynamic
+    app.state.voice_v4_dynamic = install_voice_v4_dynamic(
+        app, connect, current_session, ALLOWED_ORIGINS,
+        lambda db, message_id: assistant_completion_receipt(db, message_id))
+if os.getenv("YOSAKI_V4_DYNAMIC_CANDIDATE_ISOLATED", "0") == "1":
+    from . import chatgpt_plan
+    from .voice.realtime_dynamic_candidate import install as install_voice_v4_candidate
+    app.state.voice_v4_candidate = install_voice_v4_candidate(
+        app, connect, current_session, ALLOWED_ORIGINS,
+        lambda db, message_id: assistant_completion_receipt(db, message_id),
+        lambda *args, **kwargs: build_messages(*args, **kwargs),
+        chatgpt_plan.payload)
+if (os.getenv("YOSAKI_SCRIBE_DRAFT_ISOLATED", "0") == "1" or
+        os.getenv("YOSAKI_SCRIBE_DAILY_ENABLED", "0") == "1"):
+    from .voice.scribe_draft import install as install_scribe_draft
+    scribe_provider_factory = None
+    if (os.getenv("YOSAKI_SCRIBE_REAL_PROVIDER_ISOLATED", "0") == "1" or
+            os.getenv("YOSAKI_SCRIBE_DAILY_ENABLED", "0") == "1"):
+        from .voice.scribe_adapter import ScribeRealtimeAdapter
+        scribe_provider_factory = lambda _owner, _character, language: ScribeRealtimeAdapter(language)
+    app.state.voice_scribe_draft = install_scribe_draft(
+        app, connect, current_session, ALLOWED_ORIGINS, scribe_provider_factory,
+        getattr(app.state, "voice_continuous", None))
+
 
 def row_dict(row: sqlite3.Row) -> dict[str, Any]:
     result = dict(row)
@@ -774,12 +872,19 @@ def build_encrypted_backup(passphrase: str) -> bytes:
     memory=sqlite3.connect(":memory:")
     try:
         with connect() as source: source.backup(memory)
+        memory.execute("PRAGMA secure_delete=ON")
         memory.execute("UPDATE model_profiles SET api_key_encrypted=NULL")
         memory.execute("UPDATE mcp_servers SET auth_secret_encrypted=NULL,session_id=NULL,status='disconnected',last_error=NULL")
         memory.execute("DELETE FROM auth_sessions")
         memory.execute("DELETE FROM auth_login_attempts")
+        from .voice.backup_policy import sanitize_voice_snapshot
+        sanitize_voice_snapshot(memory, now())
+        memory.commit()
+        memory.execute("VACUUM")
         check=memory.execute("PRAGMA integrity_check").fetchone()[0]
         if check!="ok": raise HTTPException(500,"工作区数据库完整性检查失败，未生成备份")
+        if memory.execute("PRAGMA foreign_key_check").fetchone():
+            raise HTTPException(500,"备份数据库外键检查失败，未生成备份")
         db_bytes=memory.serialize()
     finally:
         memory.close()
@@ -814,6 +919,8 @@ def decrypt_backup(encrypted: bytes, passphrase: str) -> tuple[bytes,dict[str,An
 
 @app.post("/api/system/backup/export")
 def export_backup(passphrase: str = Form(...)):
+    if os.environ.get("YOSAKI_H5A_ENABLED") == "1":
+        raise HTTPException(409,"请使用已验证的 V2 大容量备份入口")
     encrypted=build_encrypted_backup(passphrase)
     response=Response(content=encrypted,media_type="application/vnd.yosaki.backup")
     response.headers["Content-Disposition"]=f'attachment; filename="yosaki-backup-{datetime.now(timezone.utc).date().isoformat()}.ybackup"'
@@ -823,79 +930,7 @@ def export_backup(passphrase: str = Form(...)):
 
 @app.post("/api/system/backup/import")
 async def import_backup(confirm_replace: bool = Form(False), passphrase: str = Form(...), backup: UploadFile = File(...)):
-    if not confirm_replace: raise HTTPException(428,"恢复备份会替换当前工作区数据，需要明确确认")
-    if len(passphrase)<12: raise HTTPException(422,"备份密码至少需要 12 个字符")
-    encrypted=await backup.read(BACKUP_MAX_BYTES*2+1)
-    if len(encrypted)>BACKUP_MAX_BYTES*2: raise HTTPException(413,"备份文件过大")
-    db_bytes,manifest=decrypt_backup(encrypted,passphrase)
-    # Validate the candidate DB in memory before touching the live database file.
-    candidate=sqlite3.connect(":memory:")
-    try:
-        candidate.deserialize(db_bytes)
-        if candidate.execute("PRAGMA integrity_check").fetchone()[0]!="ok": raise ValueError("integrity_check failed")
-        required={"users","characters","conversations","messages","model_profiles","mcp_servers","plugins"}
-        existing={row[0] for row in candidate.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        if not required.issubset(existing): raise ValueError("required tables missing")
-        if candidate.execute("SELECT COUNT(*) FROM users").fetchone()[0]!=1: raise ValueError("backup owner count invalid")
-        # Backups never restore active sessions or credentials, even if a crafted DB contains them.
-        candidate.execute("DELETE FROM auth_sessions")
-        candidate.execute("DELETE FROM auth_login_attempts")
-        candidate.execute("UPDATE model_profiles SET api_key_encrypted=NULL")
-        candidate.execute("UPDATE mcp_servers SET auth_secret_encrypted=NULL,session_id=NULL,status='disconnected',last_error=NULL")
-        candidate.commit(); restored=candidate.serialize()
-    except Exception as exc:
-        raise HTTPException(422,f"备份数据库校验失败：{str(exc)[:200]}") from exc
-    finally: candidate.close()
-    DATA.mkdir(exist_ok=True)
-    fd,temp_name=tempfile.mkstemp(prefix=".yosaki-restore-",suffix=".sqlite3",dir=DATA)
-    try:
-        with os.fdopen(fd,"wb") as target: target.write(restored); target.flush(); os.fsync(target.fileno())
-        check=sqlite3.connect(temp_name)
-        try:
-            if check.execute("PRAGMA integrity_check").fetchone()[0]!="ok": raise HTTPException(422,"恢复前完整性检查失败")
-        finally: check.close()
-        # Preserve an encrypted rollback point before replacing the workspace.
-        safety=build_encrypted_backup(passphrase)
-        safety_path=DATA / f"pre-restore-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{secrets.token_hex(4)}.ybackup"
-        with safety_path.open("xb") as rollback:
-            rollback.write(safety)
-            rollback.flush()
-            os.fsync(rollback.fileno())
-        free_activity = getattr(app.state, "free_activity_service", None)
-        if free_activity:
-            current_loop = asyncio.get_running_loop()
-            running = [task for task in free_activity.tasks.values() if task.get_loop() is current_loop and not task.done()]
-            for task in running:
-                task.cancel()
-            if running:
-                await asyncio.gather(*running, return_exceptions=True)
-        feedback_service = getattr(app.state, "feedback_service", None)
-        if feedback_service:
-            await feedback_service.pause_for_restore()
-        psychology_service = getattr(app.state, "psychology_service", None)
-        if psychology_service:
-            await psychology_service.pause_for_restore()
-        app.state.learning_paused = True
-        learning_tasks = [task for task in getattr(app.state, "learning_tasks", set()) if not task.done()]
-        for task in learning_tasks:
-            task.cancel()
-        if learning_tasks:
-            await asyncio.gather(*learning_tasks, return_exceptions=True)
-        try:
-            with DB_LOCK:
-                os.replace(temp_name,DB)
-            init_db()
-            with connect() as restored_db:
-                restored_db.execute("UPDATE backup_plan SET enabled=0,next_run_at=NULL WHERE id=1") if restored_db.execute("SELECT name FROM sqlite_master WHERE name='backup_plan'").fetchone() else None
-        finally:
-            if feedback_service:
-                feedback_service.resume_after_restore()
-            if psychology_service:
-                psychology_service.resume_after_restore()
-            app.state.learning_paused = False
-    finally:
-        if os.path.exists(temp_name): os.unlink(temp_name)
-    return {"ok":True,"message":"备份已恢复；登录会话已清除，模型与 MCP 密钥未包含，请重新登录并配置密钥。","secrets_included":False,"exported_at":manifest.get("exported_at")}
+    raise HTTPException(409,"活动数据库不允许通过上传备份直接覆盖；请先验证备份，并使用隔离恢复脚本恢复到新的空目录")
 
 
 @app.get("/health")
@@ -1057,11 +1092,20 @@ def reorder_prompt_blocks(character_id: int, payload: PromptBlockReorderInput) -
 @app.delete("/api/characters/{character_id}")
 def delete_character(character_id: int) -> Response:
     with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
         if db.execute("SELECT 1 FROM characters WHERE id = ?", (character_id,)).fetchone() is None:
             raise HTTPException(status_code=404, detail="角色不存在")
         if db.execute("SELECT COUNT(*) FROM characters").fetchone()[0] <= 1:
             raise HTTPException(status_code=409, detail="至少保留一个角色；请先创建或复制其他角色")
+        if db.execute("""SELECT 1 FROM messages m JOIN conversations c ON c.id=m.conversation_id
+            WHERE c.character_id=? AND m.tool_batch_status='continuing' LIMIT 1""",(character_id,)).fetchone():
+            raise HTTPException(409,"角色有正在继续的工具回合，请等待其结束")
         conversation_ids=[row["id"] for row in db.execute("SELECT id FROM conversations WHERE character_id=?", (character_id,))]
+        for conversation_id in conversation_ids:chat_history.assert_idle(db,conversation_id)
+        if db.execute("SELECT 1 FROM chat_attempts WHERE character_id=? AND status IN ('prepared','dispatching','streaming')",(character_id,)).fetchone():
+            raise HTTPException(409,'角色仍有活动生成')
+        db.execute('DELETE FROM chat_branch_members WHERE conversation_id IN (SELECT id FROM conversations WHERE character_id=?)',(character_id,))
+        db.execute('UPDATE chat_attempts SET snapshot_json=NULL,sources_json=NULL,parameters_json=NULL WHERE character_id=?',(character_id,))
         for conversation_id in conversation_ids:
             db.execute("DELETE FROM conversation_summaries WHERE conversation_id=?", (conversation_id,))
             assistant_ids=[row["id"] for row in db.execute("SELECT id FROM messages WHERE conversation_id=? AND tool_calls_json IS NOT NULL", (conversation_id,))]
@@ -1108,6 +1152,10 @@ def update_model(model_id: int, payload: ModelProfileInput) -> dict[str, Any]:
         if old is None:
             raise HTTPException(status_code=404, detail="模型配置不存在")
         encrypted = None if payload.protocol=="chatgpt_plan" else encrypt_secret(payload.api_key) if payload.api_key else old["api_key_encrypted"]
+        if payload.api_key or any(old[key] != getattr(payload,key) for key in ('protocol','base_url','model_name')):
+            # A capability declaration belongs to this channel/model. Editing
+            # its endpoint, model or credentials must not authorize a new one.
+            db.execute('DELETE FROM chat_model_capabilities WHERE model_id=?',(model_id,))
         db.execute("UPDATE model_profiles SET name=?, provider_name=?, base_url=?, api_key_encrypted=?, model_name=?, protocol=?, temperature=?, top_p=?, max_tokens=?, context_limit=?, supports_streaming=?, enabled=?, updated_at=?,reasoning_effort=? WHERE id=?", (payload.name, payload.provider_name, payload.base_url, encrypted, payload.model_name, payload.protocol, payload.temperature, payload.top_p, payload.max_tokens, payload.context_limit, payload.supports_streaming, payload.enabled, stamp,payload.reasoning_effort, model_id))
         row = db.execute("SELECT * FROM model_profiles WHERE id = ?", (model_id,)).fetchone()
     return safe_model(row)
@@ -1137,6 +1185,10 @@ async def provider_request(profile: sqlite3.Row, messages: list[dict[str, str]],
 
 @app.post("/api/models/{model_id}/test")
 async def test_model(model_id: int) -> dict[str, Any]:
+    continuous_gate = getattr(app.state, "voice_continuous", None)
+    if continuous_gate and continuous_gate.enabled() and (
+            continuous_gate.isolated() or continuous_gate.headset_conversation() is not None):
+        raise HTTPException(409, "voice_call_required")
     with connect() as db:
         profile = db.execute("SELECT * FROM model_profiles WHERE id = ? AND enabled = 1", (model_id,)).fetchone()
     if profile is None:
@@ -1372,7 +1424,7 @@ def available_model_tools(db) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     definitions, mapping = [], {}
     raw_rows=db.execute("SELECT t.*,s.name AS server_name,NULL AS plugin_tool_id FROM mcp_tools t JOIN mcp_servers s ON s.id=t.server_id WHERE t.enabled=1 AND t.requires_confirmation=1 AND s.enabled=1 AND s.status='connected' AND NOT EXISTS(SELECT 1 FROM plugin_tools pt WHERE pt.mcp_tool_id=t.id)").fetchall()
     packaged_rows=db.execute("SELECT t.*,s.name AS server_name,p.name AS plugin_name,pt.id AS plugin_tool_id,pt.alias AS plugin_alias FROM plugin_tools pt JOIN plugins p ON p.id=pt.plugin_id JOIN mcp_tools t ON t.id=pt.mcp_tool_id JOIN mcp_servers s ON s.id=pt.server_id WHERE pt.enabled=1 AND p.enabled=1 AND t.enabled=1 AND pt.requires_confirmation=1 AND s.enabled=1 AND s.status='connected'").fetchall()
-    for row in list(raw_rows)+list(packaged_rows):
+    for row in sorted([*raw_rows,*packaged_rows],key=lambda r:(bool(r['plugin_tool_id']),r['plugin_tool_id'] or r['id'])):
         tool_id=row["plugin_tool_id"] or row["id"]
         function_name=f"yosaki_plugin_{tool_id}" if row["plugin_tool_id"] else f"yosaki_mcp_{row['id']}"
         schema=json.loads(row["input_schema"] or "{}")
@@ -1382,12 +1434,25 @@ def available_model_tools(db) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             description=f"插件 {row['plugin_name']}：{description}"
         mapping[function_name]={"id":row["id"],"server_id":row["server_id"],"name":row["name"],"server_name":row["server_name"],"display_name":display_name,"description":description,"input_schema":schema,"plugin_tool_id":row["plugin_tool_id"],"plugin_name":row["plugin_name"] if row["plugin_tool_id"] else None}
         definitions.append({"type":"function","function":{"name":function_name,"description":f"MCP 服务 {row['server_name']}：{description}","parameters":schema}})
+    if os.getenv('YOSAKI_CHRONICLE_CONTEXT','0') == '1':
+        from . import memory_v2_chronicle_tools as chronicle_tools
+        local_definitions, local_mapping = chronicle_tools.definitions()
+        definitions.extend(local_definitions); mapping.update(local_mapping)
+    web_defs,web_map=chat_web.definitions()
+    definitions.extend(web_defs); mapping.update(web_map)
     return definitions,mapping
 
 
 @app.post("/api/mcp/tool-call")
 def disabled_direct_mcp_tool_call():
     raise HTTPException(410, "直接工具调用已停用；请通过聊天工具确认卡片创建并批准工具执行记录")
+
+
+def require_live_conversation(db, conversation_id: int):
+    """Keep Chronicle-only RAW outside every ordinary conversation path."""
+    if any(column[1] == "archive_only" for column in db.execute("PRAGMA table_info(conversations)")):
+        if db.execute("SELECT 1 FROM conversations WHERE id=? AND archive_only=1", (conversation_id,)).fetchone():
+            raise HTTPException(404, "对话不存在")
 
 
 @app.get("/api/conversations")
@@ -1397,8 +1462,10 @@ def list_conversations(character_id: int | None = None) -> list[dict[str, Any]]:
     if character_id is not None:
         query += " WHERE character_id = ?"
         params = (character_id,)
-    query += " ORDER BY updated_at DESC, id DESC"
     with connect() as db:
+        if any(column[1] == "archive_only" for column in db.execute("PRAGMA table_info(conversations)")):
+            query += " AND archive_only=0" if " WHERE " in query else " WHERE archive_only=0"
+        query += " ORDER BY updated_at DESC, id DESC"
         rows = db.execute(query, params).fetchall()
     return [row_dict(row) for row in rows]
 
@@ -1420,6 +1487,7 @@ def create_conversation(payload: ConversationInput) -> dict[str, Any]:
 @app.patch("/api/conversations/{conversation_id}")
 def rename_conversation(conversation_id: int, payload: ConversationUpdateInput):
     with connect() as db:
+        require_live_conversation(db, conversation_id)
         if not db.execute("UPDATE conversations SET title=?,updated_at=? WHERE id=?", (payload.title.strip(), now(), conversation_id)).rowcount:
             raise HTTPException(404,"对话不存在")
         row=db.execute("SELECT * FROM conversations WHERE id=?",(conversation_id,)).fetchone()
@@ -1429,19 +1497,25 @@ def rename_conversation(conversation_id: int, payload: ConversationUpdateInput):
 @app.get("/api/conversations/{conversation_id}/messages")
 def list_messages(conversation_id: int) -> list[dict[str, Any]]:
     with connect() as db:
-        rows = db.execute("SELECT * FROM messages WHERE conversation_id = ? ORDER BY id", (conversation_id,)).fetchall()
+        require_live_conversation(db, conversation_id)
+        rows = chat_history.rows(db, conversation_id)
         output=[]
         for row in rows:
-            item=row_dict(row)
+            item=dict(row)
             item.pop("provider_state_json",None)
-            if row["tool_calls_json"]:
+            if row["tool_calls_json"] or row.get('inherited_tool_calls_json'):
                 runs=db.execute("SELECT tr.*, mt.description, ms.name AS server_name FROM tool_runs tr LEFT JOIN mcp_tools mt ON mt.server_id=tr.server_id AND mt.name=tr.tool_name LEFT JOIN mcp_servers ms ON ms.id=tr.server_id WHERE tr.assistant_message_id=? ORDER BY tr.id",(row["id"],)).fetchall()
                 item["tool_batch_run_ids"]=[r["id"] for r in runs]
                 item["tool_runs"]=[{"run_id":r["id"],"tool_name":r["display_name"] or r["tool_name"],"plugin_name":r["plugin_name"],"server_name":r["server_name"] or "MCP","description":r["description"] or "","arguments":json.loads(r["arguments"] or "{}"),"status":r["status"],"result":json.loads(r["result"]) if r["result"] else None,"error":r["error"]} for r in runs]
+                if row.get('inherited'):
+                    item['tool_batch_run_ids']=[]
+                    for run in item['tool_runs']:run['status']='archived'
             if row["generation_status"]=="imported" and row["imported_tool_runs_json"]:
                 item["tool_batch_run_ids"]=[]
                 item["tool_runs"]=json.loads(row["imported_tool_runs_json"])
             item.pop("imported_tool_runs_json",None)
+            item['attachments']=[dict(a) for a in db.execute('SELECT a.id,a.name,a.mime,a.size,a.diagnostics_json FROM chat_message_attachments b JOIN chat_attachments a ON a.id=b.attachment_id WHERE b.message_id=?',(row['id'],))]
+            item['quotes']=[dict(q) if chat_history.visible(db,conversation_id,q['source_message_id']) else {'source_message_id':q['source_message_id'],'excerpt':'引用来源已退出当前路径','state':'eligibility_rejected'} for q in db.execute('SELECT source_message_id,excerpt FROM chat_quotes WHERE message_id=?',(row['id'],))]
             output.append(item)
     return output
 
@@ -1449,7 +1523,21 @@ def list_messages(conversation_id: int) -> list[dict[str, Any]]:
 @app.delete("/api/conversations/{conversation_id}")
 def delete_conversation(conversation_id: int) -> Response:
     with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        require_live_conversation(db, conversation_id)
+        chat_history.assert_idle(db,conversation_id)
+        if db.execute("SELECT 1 FROM messages WHERE conversation_id=? AND tool_batch_status='continuing' LIMIT 1",(conversation_id,)).fetchone():
+            raise HTTPException(409,"对话有正在继续的工具回合，请等待其结束")
+        if db.execute('SELECT 1 FROM chat_branch_members b JOIN messages m ON m.id=b.message_id WHERE m.conversation_id=? AND b.conversation_id<>?',(conversation_id,conversation_id)).fetchone():
+            raise HTTPException(409,'此对话被其他分支引用，请先处理这些分支，避免破坏共同来源')
+        db.execute('DELETE FROM chat_branch_members WHERE conversation_id=?',(conversation_id,))
+        attached=[r[0] for r in db.execute('SELECT DISTINCT attachment_id FROM chat_message_attachments WHERE message_id IN (SELECT id FROM messages WHERE conversation_id=?)',(conversation_id,))]
+        db.execute('UPDATE chat_attempts SET snapshot_json=NULL,sources_json=NULL,parameters_json=NULL WHERE conversation_id=?',(conversation_id,))
+        db.execute('DELETE FROM tool_runs WHERE conversation_id=?',(conversation_id,))
         cursor = db.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+        for aid in attached:
+            db.execute('DELETE FROM chat_attachments WHERE id=? AND NOT EXISTS(SELECT 1 FROM chat_message_attachments WHERE attachment_id=?)',(aid,aid))
+        # Unsent uploads remain owned by their role; do not sweep unrelated drafts.
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="对话不存在")
     return Response(status_code=204)
@@ -1457,6 +1545,20 @@ def delete_conversation(conversation_id: int) -> Response:
 
 def sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def assistant_completion_receipt(db: sqlite3.Connection, message_id: int) -> dict[str, Any]:
+    """Identify a saved assistant body without changing normal insert timing."""
+    row = db.execute("SELECT id,conversation_id,content,created_at,generation_status FROM messages WHERE id=? AND role='assistant'",
+                     (message_id,)).fetchone()
+    if row is None:
+        raise RuntimeError("assistant_message_missing_after_save")
+    version = json.dumps([row["id"], row["conversation_id"], row["created_at"],
+                          row["generation_status"] or "completed", row["content"]],
+                         ensure_ascii=False, separators=(",", ":"))
+    return {"message_id": row["id"],
+            "message_version_sha256": hashlib.sha256(version.encode("utf-8")).hexdigest(),
+            "public_text_sha256": hashlib.sha256(row["content"].encode("utf-8")).hexdigest()}
 
 
 def split_monologue(raw: str, enabled: bool) -> tuple[str,str,str]:
@@ -1493,6 +1595,7 @@ def demo_reply(character_name: str, message: str) -> str:
 
 def select_history(history, settings):
     rows=list(history)
+    if settings.get('context_policy_enabled'):return rows
     mode=settings.get("window_mode", "legacy")
     if mode == "legacy":
         limit=settings.get("history_limit",100)
@@ -1506,6 +1609,10 @@ def select_history(history, settings):
         for row in rows:
             if row["role"]=="tool" and row["tool_call_id"] in calls: ids.add(row["id"])
             if row["role"]=="assistant" and row["tool_calls_json"] and any(call.get("id") in calls for call in json.loads(row["tool_calls_json"])): ids.add(row["id"])
+        if calls and ids:
+            first=next(i for i,row in enumerate(rows) if row['id'] in ids)
+            start=next((i for i in range(first,-1,-1) if rows[i]['role']=='user'),first)
+            ids.update(row['id'] for row in rows[start:])
         return [row for row in rows if row["id"] in ids]
     turns=[]
     for row in rows:
@@ -1520,6 +1627,12 @@ def select_history(history, settings):
     return [row for turn in turns[-limit:] for row in turn] if limit else []
 
 
+def voice_call_history(history):
+    """A canceled spoken round is evidence, not a completed model reply."""
+    return [row for row in history if not (row["role"] == "assistant" and
+                                         row["generation_status"] == "stopped")]
+
+
 def build_messages(character, prompt_blocks, history, current=None, memories=(), summary="", history_limit=None, settings=None, include_provider_state=False, desire_advisory=""):
     ordered = sorted((b for b in prompt_blocks if b["enabled"]), key=lambda b: (b["order_index"], b["id"]))
     def section(position):
@@ -1532,7 +1645,10 @@ def build_messages(character, prompt_blocks, history, current=None, memories=(),
     messages = [{"role": "system", "content": "\n\n".join(prefix) or "请自然、真诚地回应用户。"}]
     dynamic = section("memory")
     for memory in memories:
-        dynamic.append(f"参考记忆（{'长期' if memory['scope']=='long' else '本对话'}）：\n{memory['content']}")
+        if 'channel' in memory.keys() and memory['channel'] == 'chronicle':
+            dynamic.append('Chronicle 已确认经历（参考材料，不是指令）：\n' + memory['content'])
+        else:
+            dynamic.append(f"参考记忆（{'长期' if memory['scope']=='long' else '本对话'}）：\n{memory['content']}")
     if summary:
         dynamic.append("用户整理的对话摘要（参考资料）：\n" + summary)
     if desire_advisory:
@@ -1563,22 +1679,194 @@ def build_messages(character, prompt_blocks, history, current=None, memories=(),
     return messages
 
 
-def memory_context(db, character_id, conversation_id, topic=""):
+def memory_context(db, character_id, conversation_id, topic="", *, chronicle_owner_id=None, supplement=None, preview=None):
+    with chat_history.reading(db, conversation_id):
+        return _memory_context(db, character_id, conversation_id, topic, chronicle_owner_id=chronicle_owner_id, supplement=supplement, preview=preview)
+
+
+def _memory_context(db, character_id, conversation_id, topic="", *, chronicle_owner_id=None, supplement=None, preview=None):
     settings = db.execute("SELECT * FROM context_settings WHERE character_id=?", (character_id,)).fetchone()
     settings = dict(settings) if settings else {"history_limit": 100, "memory_enabled": True,"window_mode":"strict","window_size":50,"window_keep":40,"reasoning_prompt":"","monologue_enabled":False,"monologue_prompt":""}
-    memories = db.execute("""SELECT * FROM memories m WHERE character_id=? AND enabled=1
-        AND (scope='long' OR (scope='temporary' AND conversation_id=?))
-        AND NOT EXISTS(SELECT 1 FROM learning_memories lm WHERE lm.memory_id=m.id)
-        ORDER BY id""", (character_id, conversation_id)).fetchall() if settings["memory_enabled"] else []
+    settings['character_id']=character_id
+    policy=db.execute('SELECT enabled FROM chat_context_policy WHERE character_id=?',(character_id,)).fetchone()
+    settings['context_policy_enabled']=bool(policy and policy[0])
+    memories = []
+    if preview is not None:
+        preview.update(enabled=False, budget={'limitTokens':1024,'limitBlocks':5,'usedTokens':0,'usedBlocks':0,'estimated':True},
+                       selectionDetails=[], reason='memory_or_chronicle_disabled')
     if settings["memory_enabled"]:
+        manual, approved = memory_authority.eligible_rows(db, character_id)
+        memories = sorted((row for row in manual if row["scope"] == "long" or
+                           (row["scope"] == "temporary" and row["conversation_id"] == conversation_id)),
+                          key=lambda row: row["id"])
         keyword = " ".join(topic.strip().casefold().split())[:150]
-        learned = db.execute("""SELECT m.* FROM memories m JOIN learning_memories lm ON lm.memory_id=m.id
-            WHERE m.character_id=? AND m.enabled=1 AND lm.status='accepted'
-            AND (?='' OR instr(?,lm.subject)>0 OR instr(lm.subject,?)>0)
-            ORDER BY lm.updated_at DESC LIMIT 3""", (character_id, keyword, keyword, keyword)).fetchall()
-        memories = [*memories, *learned]
+        learned = [row for row, item in sorted(approved, key=lambda pair: (pair[1]["updated_at"], pair[1]["id"]), reverse=True)
+                   if not keyword or keyword in item["subject"] or item["subject"] in keyword][:3]
+        memories = [row for row in [*memories, *learned] if chat_history.memory_allowed(db,row,conversation_id)]
+        if chat_history.scope(db,conversation_id):
+            # Legacy approved learning projections have no branch coverage proof.
+            learned_ids={row['id'] for row in learned}
+            memories=[row for row in memories if row['id'] not in learned_ids]
+        if os.getenv('YOSAKI_CHRONICLE_CONTEXT', '0') == '1' and chronicle_owner_id is not None:
+            from . import memory_v2_chronicle_channel as chronicle
+            from . import memory_v2_chronicle_curation as curation
+            from . import memory_v2_chronicle_embedding as embeddings
+            try:
+                recalled = embeddings.cached_search(db, character_id, chronicle_owner_id, topic, limit=3, budget_tokens=1024)
+                supplemented = []
+                if not recalled['blocks'] and supplement:
+                    from . import memory_v2_chronicle_vectors as vectors
+                    for eid, fingerprint in supplement.items():
+                        try:
+                            if vectors._input(db, character_id, eid)[1] == fingerprint:
+                                supplemented.append(eid)
+                        except ValueError:
+                            continue
+                chosen = list(dict.fromkeys([*curation.fixed_entries(db, character_id, chronicle_owner_id),
+                    *(eid for block in recalled['blocks'] for eid in block['entryIds']), *supplemented]))
+                if len(chosen) > 50:
+                    raise ValueError('chronicle_fixed_capacity_exceeded')
+                projected = chronicle.project(db, character_id, chronicle_owner_id, chosen, budget_tokens=1024, max_blocks=5)
+                if preview is not None:
+                    preview.update({k:v for k,v in projected.items() if k!='blocks'}, enabled=True)
+                    preview.pop('reason', None)
+                memories.extend({'id': 'chronicle:' + ','.join(block['entryIds']), 'scope': 'chronicle',
+                    'content': block['text'], 'channel': 'chronicle', 'view': block['projectionKind']}
+                    for block in projected['blocks'])
+            except ValueError:
+                if preview is not None:preview.update(enabled=False,reason='current_content_or_capacity_unavailable')
+                # Failure closes only this optional channel. Never fall back to RAW.
+                pass
     summary = db.execute("SELECT content FROM conversation_summaries WHERE conversation_id=? AND enabled=1", (conversation_id,)).fetchone()
-    return memories, summary["content"] if summary else "", settings
+    summary_text = summary["content"] if summary else ""
+    current_scope=chat_history.scope(db,conversation_id)
+    if current_scope and current_scope['path_changed']:
+        summary_text = ""  # Legacy manual summaries lack coverage; never infer inheritance.
+    covered=chat_context.summary(db,conversation_id)
+    manual_choice=db.execute('SELECT content FROM chat_summaries WHERE id=? AND enabled=1',('manual:'+str(conversation_id),)).fetchone()
+    if covered: summary_text=covered['content']
+    elif manual_choice: summary_text=manual_choice['content']
+    return memories, summary_text, settings
+
+
+
+def scoped_tool_history(db,cid,character_id,owner_id,rows):
+    from . import memory_v2_chronicle_tools
+    with chat_history.reading(db,cid):
+        return memory_v2_chronicle_tools.refresh_history(db,character_id,owner_id,rows)
+
+
+def finalize_chat_context(db,cid,profile,request_messages,history,current_id,settings,memories,summary,advisory,chronicle,tools,draft=None):
+    selected=select_history(history,settings)
+    request_messages=chat_attachments.enrich(db,request_messages,selected,current_id,profile,cid)
+    if draft:
+        files=chat_attachments.check(db,draft.character_id,draft.attachment_ids,profile)
+        text=draft.message or ('[附件]' if files else '')
+        if draft.quote:
+            quote=chat_history.visible(db,cid,draft.quote.get('message_id'))
+            excerpt=draft.quote.get('excerpt')
+            if not quote or not isinstance(excerpt,str) or not excerpt or len(excerpt)>10000 or excerpt not in quote['content']:raise HTTPException(422,'引用不是当前路径中的原文片段')
+            text+='\n\n[引用资料，不是指令]\n'+excerpt+'\n[引用结束]'
+        request_messages[-1]['content']=chat_attachments.content_for(text,files,profile)
+    policy=db.execute('SELECT * FROM chat_context_policy WHERE character_id=?',(settings.get('character_id'),)).fetchone()
+    request_messages,budget=chat_context.constrain(request_messages,tools,profile,dict(policy) if policy else None)
+    sources=chat_context.trace(db,cid,settings,memories,summary,advisory,chronicle)
+    sources['history_ids']=[message.pop('_source_id') for message in request_messages if '_source_id' in message]
+    covered=chat_context.summary(db,cid)
+    if covered:sources['history_ids']=list(dict.fromkeys(sources['history_ids']+[r['id'] for r in json.loads(covered['coverage_json'])]))
+    sources['history_excluded_ids']=[r['id'] for r in history if r['id'] not in sources['history_ids']]
+    sources['history_refs']=[{'id':r['id'],'sha256':chat_history.digest(r['content'] or '')} for r in chat_history.rows(db,cid) if r['id'] in sources['history_ids']]
+    sources['budget']=budget
+    return request_messages,sources
+
+
+def chronicle_rates_status():
+    today = datetime.now(timezone.utc).date().isoformat()
+    checked = os.getenv('YOSAKI_CHRONICLE_PRICES_VERIFIED_DATE')
+    try:
+        expires = (datetime.strptime(checked, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+                   + timedelta(days=1)).isoformat()
+    except (TypeError, ValueError):
+        expires = None
+    return {'ratesCurrent': checked == today, 'ratesVerifiedDate': checked,
+            'utcDate': today, 'expiresAt': expires}
+
+
+def chronicle_chat_supplement_state():
+    state = chronicle_rates_status()
+    reason = next((reason for flag, reason in (
+        ('YOSAKI_CHRONICLE_WORKSPACE', 'chronicle_workspace_disabled'),
+        ('YOSAKI_CHRONICLE_CONTEXT', 'chronicle_context_disabled'),
+        ('YOSAKI_CHRONICLE_CHAT_SUPPLEMENT', 'chronicle_chat_supplement_disabled'))
+        if os.getenv(flag) != '1'), None)
+    if reason is None and 'chronicle_provider' not in globals():
+        reason = 'chronicle_provider_unavailable'
+    if reason is None and not state['ratesCurrent']:
+        reason = 'chronicle_daily_rates_verification_required'
+    return {**state, 'enabled': reason is None, 'reason': reason,
+            'workspaceEnabled': os.getenv('YOSAKI_CHRONICLE_WORKSPACE') == '1'}
+
+
+def chronicle_chat_supplement_enabled():
+    return chronicle_chat_supplement_state()['enabled']
+
+
+@app.get('/api/chat/chronicle-supplement-status')
+def chronicle_chat_supplement_status():
+    from . import memory_v2_chronicle_semantic as semantic
+    return {**chronicle_chat_supplement_state(),
+            'maxMicrousd': semantic.BUDGET, 'defaultWaitSeconds': semantic.CHAT_WAIT_SECONDS,
+            'maxWaitSeconds': max(semantic.CHAT_WAIT_OPTIONS),
+            'waitSecondsOptions': list(semantic.CHAT_WAIT_OPTIONS), 'waitPolicy': semantic.CHAT_WAIT_POLICY}
+
+
+def chronicle_wait_metadata(payload):
+    from . import memory_v2_chronicle_semantic as semantic
+    return {'waitSeconds': payload.chronicle_supplement_wait_seconds,
+            'waitPolicy': semantic.CHAT_WAIT_POLICY,
+            'maxMicrousd': payload.chronicle_supplement_max_microusd}
+
+
+async def chat_chronicle_supplement(payload, request, profile, generation_id):
+    from types import SimpleNamespace
+    from . import memory_v2_chronicle_semantic as semantic
+    import time
+
+    if (payload.chronicle_supplement_max_microusd != semantic.BUDGET
+            or not request or not chronicle_chat_supplement_enabled()
+            or payload.reuse_last_user or payload.voice_call_id or payload.voice_call_turn_id
+            or profile['protocol'] != 'openai_responses' or profile['model_name'] != semantic.MODEL
+            or profile['base_url'].rstrip('/') != 'https://api.openai.com/v1'):
+        return None
+    owner = getattr(request.state, 'user', {}).get('id')
+    if owner is None:
+        return None
+    params = SimpleNamespace(characterId=payload.character_id, query=payload.message,
+        requestId=generation_id, modelId=profile['id'], approveMaxMicrousd=semantic.BUDGET,
+        asOf=datetime.now(timezone.utc).isoformat(), fromDate=None, toDate=None,
+        chatWaitSeconds=payload.chronicle_supplement_wait_seconds)
+    deadline = semantic.chat_deadline(params.chatWaitSeconds)
+    cancelled = threading.Event()
+    search = semantic.ChatSearch(connect, params, owner,
+                                 lambda: None if cancelled.is_set() else current_session(request),
+                                 deadline=deadline)
+    try:
+        # A running worker can still complete its ledger settlement after
+        # the chat abandons the result. The worker checks the same deadline
+        # before every outbound stage.
+        # Construction and scheduling consume the SAME deadline, rather than
+        # granting a fresh wait window after Search has already been created.
+        remaining = deadline-time.monotonic()
+        if remaining <= 0:
+            return {}
+        await asyncio.wait_for(asyncio.to_thread(search.run, chronicle_provider, chronicle_embedding_provider),
+                               timeout=remaining)
+        return search.approved_hashes
+    except asyncio.CancelledError:
+        cancelled.set()
+        raise
+    except Exception:
+        return {}
 
 
 def estimate_tokens(text):
@@ -1614,6 +1902,8 @@ def validate_memory_scope(db, payload):
     if not db.execute("SELECT 1 FROM characters WHERE id=?", (payload.character_id,)).fetchone():
         raise HTTPException(404, "角色不存在")
     if payload.scope == "temporary":
+        if payload.conversation_id is not None:
+            require_live_conversation(db, payload.conversation_id)
         if not db.execute("SELECT 1 FROM conversations WHERE id=? AND character_id=?", (payload.conversation_id, payload.character_id)).fetchone():
             raise HTTPException(422, "临时记忆必须关联此角色的已保存对话")
     elif payload.conversation_id is not None:
@@ -1623,8 +1913,11 @@ def validate_memory_scope(db, payload):
 @app.get("/api/memories")
 def list_memories(character_id: int, conversation_id: int | None = None, q: str = ""):
     with connect() as db:
+        if conversation_id is not None:
+            require_live_conversation(db, conversation_id)
         rows = db.execute("SELECT * FROM memories WHERE character_id=? AND (scope='long' OR conversation_id=?) AND instr(content,?)>0 ORDER BY id", (character_id, conversation_id, q)).fetchall()
-    return [row_dict(r) for r in rows]
+        managed = {row[0] for row in db.execute("SELECT DISTINCT memory_id FROM learning_memories WHERE memory_id IS NOT NULL")}
+    return [{**row_dict(r), "managed_by_learning": r["id"] in managed} for r in rows]
 
 
 @app.post("/api/memories", status_code=201)
@@ -1632,6 +1925,7 @@ def create_memory(payload: MemoryInput):
     with connect() as db:
         validate_memory_scope(db, payload)
         cursor = db.execute("INSERT INTO memories(character_id,conversation_id,scope,content,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (payload.character_id,payload.conversation_id,payload.scope,payload.content,payload.enabled,now(),now()))
+        chat_history.bind_manual_memory(db,cursor.lastrowid,payload.conversation_id,payload.scope)
         return row_dict(db.execute("SELECT * FROM memories WHERE id=?", (cursor.lastrowid,)).fetchone())
 
 
@@ -1640,14 +1934,19 @@ def update_memory(memory_id: int, payload: MemoryInput):
     with connect() as db:
         if not db.execute("SELECT 1 FROM memories WHERE id=? AND character_id=?", (memory_id,payload.character_id)).fetchone():
             raise HTTPException(404, "记忆不存在")
+        if db.execute("SELECT 1 FROM learning_memories WHERE memory_id=? LIMIT 1", (memory_id,)).fetchone():
+            raise HTTPException(409, "这条记忆由长期学习管理；请在长期学习中审阅或归档，不能从普通记忆修改")
         validate_memory_scope(db,payload)
         db.execute("UPDATE memories SET conversation_id=?,scope=?,content=?,enabled=?,updated_at=? WHERE id=?",(payload.conversation_id,payload.scope,payload.content,payload.enabled,now(),memory_id))
+        chat_history.bind_manual_memory(db,memory_id,payload.conversation_id,payload.scope)
         return row_dict(db.execute("SELECT * FROM memories WHERE id=?",(memory_id,)).fetchone())
 
 
 @app.delete("/api/memories/{memory_id}")
 def delete_memory(memory_id: int):
     with connect() as db:
+        if db.execute("SELECT 1 FROM learning_memories WHERE memory_id=? LIMIT 1", (memory_id,)).fetchone():
+            raise HTTPException(409, "这条记忆由长期学习管理；请在长期学习中审阅或归档，不能从普通记忆删除")
         if not db.execute("DELETE FROM memories WHERE id=?", (memory_id,)).rowcount:
             raise HTTPException(404,"记忆不存在")
     return Response(status_code=204)
@@ -1673,6 +1972,7 @@ def save_context_settings(character_id: int, payload: ContextSettingsInput):
 @app.get("/api/conversations/{conversation_id}/export")
 def export_conversation(conversation_id: int, format: Literal["json", "markdown"] = "json"):
     with connect() as db:
+        require_live_conversation(db, conversation_id)
         conversation=db.execute("SELECT * FROM conversations WHERE id=?",(conversation_id,)).fetchone()
         if conversation is None:
             raise HTTPException(404,"对话不存在")
@@ -1709,6 +2009,7 @@ def export_conversation(conversation_id: int, format: Literal["json", "markdown"
 @app.get("/api/conversations/{conversation_id}/summary")
 def get_summary(conversation_id: int):
     with connect() as db:
+        require_live_conversation(db, conversation_id)
         if not db.execute("SELECT 1 FROM conversations WHERE id=?",(conversation_id,)).fetchone():
             raise HTTPException(404,"对话不存在")
         row = db.execute("SELECT * FROM conversation_summaries WHERE conversation_id=?",(conversation_id,)).fetchone()
@@ -1718,9 +2019,12 @@ def get_summary(conversation_id: int):
 @app.put("/api/conversations/{conversation_id}/summary")
 def save_summary(conversation_id: int, payload: SummaryInput):
     with connect() as db:
+        require_live_conversation(db, conversation_id)
         if not db.execute("SELECT 1 FROM conversations WHERE id=?",(conversation_id,)).fetchone():
             raise HTTPException(404,"对话不存在")
         db.execute("INSERT INTO conversation_summaries VALUES(?,?,?,?) ON CONFLICT(conversation_id) DO UPDATE SET content=excluded.content,enabled=excluded.enabled,updated_at=excluded.updated_at",(conversation_id,payload.content,payload.enabled,now()))
+        db.execute('UPDATE chat_summaries SET enabled=0 WHERE conversation_id=?',(conversation_id,))
+        db.execute('INSERT OR REPLACE INTO chat_summaries VALUES(?,?,?,?,NULL,?,?)',('manual:'+str(conversation_id),conversation_id,'[]',payload.content,payload.enabled,now()))
     return payload.model_dump()
 
 
@@ -1728,43 +2032,112 @@ class PreviewInput(BaseModel):
     character_id: int
     conversation_id: int | None = None
     message: str = Field(default="", max_length=20000)
+    model_profile_id: int | None = None
+    overrides: dict[str, Any] = Field(default_factory=dict)
+    attachment_ids: list[str] = Field(default_factory=list,max_length=8)
+    quote: dict[str,Any] | None = None
 
 
 @app.post("/api/chat/context-preview")
-def context_preview(payload: PreviewInput):
+def context_preview(payload: PreviewInput, request: Request = None):
     with connect() as db:
         character = db.execute("SELECT * FROM characters WHERE id=?", (payload.character_id,)).fetchone()
         if character is None:
             raise HTTPException(404, "角色不存在")
         history = []
         if payload.conversation_id is not None:
+            require_live_conversation(db, payload.conversation_id)
             if not db.execute("SELECT 1 FROM conversations WHERE id=? AND character_id=?", (payload.conversation_id, payload.character_id)).fetchone():
                 raise HTTPException(404, "对话不属于此角色")
-            history = db.execute("SELECT * FROM messages WHERE conversation_id=? ORDER BY id", (payload.conversation_id,)).fetchall()
+            history = chat_history.rows(db,payload.conversation_id)
         blocks = db.execute("SELECT * FROM prompt_blocks WHERE character_id=?", (payload.character_id,)).fetchall()
-        memories, summary, limit = memory_context(db, payload.character_id, payload.conversation_id, payload.message)
+        chronicle_preview={}
+        memories, summary, limit = memory_context(db, payload.character_id, payload.conversation_id, payload.message, chronicle_owner_id=getattr(request.state, 'user', {}).get('id') if request else None, preview=chronicle_preview)
+        from . import memory_v2_chronicle_tools
+        history = scoped_tool_history(db,payload.conversation_id,payload.character_id,getattr(request.state, 'user', {}).get('id') if request else None,history)
         desire_advisory = desires.chat_advisory(db, payload.character_id, payload.message)
-    messages = build_messages(character, blocks, history, payload.message, memories, summary, settings=limit, desire_advisory=desire_advisory)
-    stable = estimate_tokens(messages[0]["content"])
-    dynamic = sum(estimate_tokens(x["content"]) for x in messages[1:])
-    return {"messages": messages, "estimate": {"stable":stable,"dynamic":dynamic,"total":stable+dynamic,"method":"字符启发式估算，不含协议开销，非服务商计费值"}, "history_included":len(select_history(history,limit)), "history_total":len(history), "cache_status":"未提供服务商缓存数据，不推算命中率", "source": "saved", "note": "仅预览已保存配置，不调用模型、不写入聊天记录。发送前修改配置或历史会改变请求。"}
+    with connect() as db:
+        total=len(history);history=chat_context.uncovered(db,payload.conversation_id,history)
+        conv=db.execute('SELECT model_profile_id FROM conversations WHERE id=?',(payload.conversation_id,)).fetchone()
+        pid=payload.model_profile_id or (conv[0] if conv else None) or character['default_model_id']
+        profile=db.execute('SELECT * FROM model_profiles WHERE id=? AND enabled=1',(pid,)).fetchone()
+        tools,_=available_model_tools(db) if profile else ([],{})
+        if profile:
+            profile=model_capabilities.effective(profile,payload.overrides)
+            history=chat_protocol.safe_history(db,history,profile)
+        messages=build_messages(character,blocks,history,payload.message,memories,summary,settings=limit,
+            desire_advisory=desire_advisory,include_provider_state=bool(profile and profile['protocol']!='openai_compatible'))
+        limit['character_id']=payload.character_id
+        messages,sources=finalize_chat_context(db,payload.conversation_id,profile,messages,history,None,limit,memories,summary,desire_advisory,chronicle_preview,tools,draft=payload)
+        body,_=chat_protocol.serialize(profile,messages,tools) if profile else ({'mode':'demo','messages':messages},None)
+        parameters=model_capabilities.effects(profile,body) if profile else {}
+    stable=estimate_tokens(json.dumps(messages[0]['content'],ensure_ascii=False))
+    dynamic=sum(estimate_tokens(json.dumps(x['content'],ensure_ascii=False)) for x in messages[1:])
+    return {'chronicle':chronicle_preview,'messages':chat_requests.safe_snapshot(messages),'serialized':chat_requests.safe_snapshot(body),
+        'parameters':parameters,'sources':sources,'estimate':{'stable':stable,'dynamic':dynamic,'total':stable+dynamic,'method':'字符启发式，非账单；预算另按全请求保守字节上界'},
+        'history_included':len(sources['history_ids']),'history_total':total,'source':'preview','cache_status':'无命中保证',
+        'note':'当前配置的只读预览，不会派发模型或自动摘要；发送前配置、来源和历史变化会改变请求。'}
 
 
 @app.get("/api/chat/tool-runs")
 def list_chat_tool_runs(conversation_id: int):
     with connect() as db:
+        require_live_conversation(db, conversation_id)
         rows = db.execute("SELECT * FROM tool_runs WHERE conversation_id=? ORDER BY id", (conversation_id,)).fetchall()
     return [row_dict(row) for row in rows]
 
 
 @app.post("/api/chat/tool-runs/{run_id}/decision")
-async def decide_chat_tool_run(run_id: int, payload: ToolDecisionInput):
+async def decide_chat_tool_run(run_id: int, payload: ToolDecisionInput, request: Request = None):
+    with connect() as check_db:
+        candidate=check_db.execute('SELECT server_id FROM tool_runs WHERE id=?',(run_id,)).fetchone()
+    if candidate and candidate[0]==chat_web.SERVER:
+        return await chat_web.decide(_sys.modules[__name__],run_id,payload)
     with connect() as db:
+        db.execute('BEGIN IMMEDIATE')
         run = db.execute("SELECT * FROM tool_runs WHERE id=?", (run_id,)).fetchone()
         if run is None:
             raise HTTPException(404, "工具调用不存在")
+        require_live_conversation(db, run["conversation_id"])
+        if chat_history.visible(db,run["conversation_id"],run["assistant_message_id"]) is None:
+            raise HTTPException(409,"旧版本工具卡不可执行")
         if run["status"] != "pending_confirmation":
             raise HTTPException(409, "此工具调用已处理或不再等待确认")
+        if run["server_id"] == -34:
+            from . import memory_v2_chronicle_tools as chronicle_tools
+            identity = current_session(request) if request is not None else None
+            if not identity:
+                raise HTTPException(401, 'authentication_required')
+            conversation = db.execute("SELECT * FROM conversations WHERE id=?",(run["conversation_id"],)).fetchone()
+            if conversation is None:
+                raise HTTPException(404,'conversation_unavailable')
+            cid = conversation["character_id"]
+            _, allowed = chronicle_tools.definitions()
+            spec = allowed.get(run["tool_name"])
+            if spec is None:
+                raise HTTPException(409,'chronicle_tool_unknown')
+            origin = db.execute("SELECT * FROM messages WHERE id=?",(run["assistant_message_id"],)).fetchone()
+            if origin is None:
+                raise HTTPException(409,'tool_origin_missing')
+            require_tool_origin(db,run["conversation_id"],cid,origin["origin_user_message_id"],
+                                origin["origin_user_content_sha256"])
+            try:
+                arguments=json.loads(run["arguments"])
+                validate_tool_arguments(arguments,spec["input_schema"])
+                if payload.approve:
+                    with chat_history.reading(db,run["conversation_id"]):
+                        result, receipt=chronicle_tools.execute(db,cid,identity["id"],run["tool_name"],arguments)
+                    status='success'
+                else:
+                    result=receipt={'state':'rejected','message':'用户拒绝本次记忆查阅。'}; status='rejected'
+            except ValueError:
+                result=receipt={'state':'unavailable','message':'记忆当前不可读取，未返回旧内容。'}; status='revoked'
+            serialized=json.dumps(receipt,ensure_ascii=False)
+            db.execute("UPDATE tool_runs SET status=?,confirmed=1,result=?,finished_at=? WHERE id=? AND status='pending_confirmation'",
+                       (status,serialized,now(),run_id))
+            db.execute("INSERT INTO messages(conversation_id,role,content,tool_call_id,tool_name,created_at) VALUES(?,'tool',?,?,?,?)",
+                       (run["conversation_id"],serialized,run["provider_call_id"],run["tool_name"],now()))
+            return {'run_id':run_id,'status':status,'result':result}
         server = db.execute("SELECT * FROM mcp_servers WHERE id=? AND enabled=1", (run["server_id"],)).fetchone()
         tool = db.execute("SELECT * FROM mcp_tools WHERE server_id=? AND name=? AND enabled=1", (run["server_id"], run["tool_name"])).fetchone()
         if server is None or tool is None:
@@ -1809,50 +2182,165 @@ async def decide_chat_tool_run(run_id: int, payload: ToolDecisionInput):
         return {"run_id":run_id,"status":"error","error":"MCP 工具调用失败","result":{"error":"MCP 工具调用失败"}}
 
 
+def tool_origin_fingerprint(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def require_tool_origin(db, conversation_id, character_id, user_message_id, content_sha256, *, must_be_last=False):
+    """Validate a persisted user identity; never infer it from nearby messages."""
+    broken = HTTPException(409, "工具回合原始用户消息缺失、已变更或归属不明；请重新发送消息")
+    require_live_conversation(db, conversation_id)
+    if (not isinstance(user_message_id, int) or user_message_id <= 0
+            or not isinstance(content_sha256, str) or len(content_sha256) != 64
+            or not isinstance(character_id, int) or character_id <= 0):
+        raise broken
+    conversation = db.execute("SELECT character_id FROM conversations WHERE id=?", (conversation_id,)).fetchone()
+    user = db.execute("SELECT * FROM messages WHERE id=?", (user_message_id,)).fetchone()
+    if (conversation is None or conversation["character_id"] != character_id or user is None
+            or not chat_history.visible(db,conversation_id,user["id"]) or user["role"] != "user"
+            or not user["content"].strip()
+            or not hmac.compare_digest(tool_origin_fingerprint(user["content"]), content_sha256)):
+        raise broken
+    if must_be_last and chat_history.rows(db,conversation_id)[-1]["id"] != user_message_id:
+        raise broken
+    return user
+
+
+def verified_tool_turn(db, run, *, expected_status="awaiting_confirmation"):
+    """Prove that a finished tool batch belongs to one continuous user turn."""
+    def broken():
+        raise HTTPException(409, "工具回合关联不完整或已过期；请刷新对话后重新发送消息")
+
+    conversation = db.execute("SELECT * FROM conversations WHERE id=?", (run["conversation_id"],)).fetchone()
+    if conversation is None:
+        broken()
+    require_live_conversation(db, conversation["id"])
+    character = db.execute("SELECT * FROM characters WHERE id=?", (conversation["character_id"],)).fetchone()
+    message = db.execute("SELECT * FROM messages WHERE id=?", (run["assistant_message_id"],)).fetchone()
+    if (character is None or message is None or message["conversation_id"] != conversation["id"]
+            or message["role"] != "assistant" or message["generation_status"] == "imported"):
+        broken()
+    if message["tool_batch_status"] != expected_status:
+        raise HTTPException(409, "这轮工具调用已经继续或完成")
+
+    anchor = require_tool_origin(db, conversation["id"], character["id"],
+                                 message["origin_user_message_id"], message["origin_user_content_sha256"])
+    if message["origin_character_id"] != character["id"]:
+        broken()
+
+    history = chat_history.rows(db,conversation["id"])
+    position = next((index for index, row in enumerate(history) if row["id"] == message["id"]), None)
+    if position is None:
+        broken()
+    anchor_index = next((index for index, row in enumerate(history[:position]) if row["id"] == anchor["id"]), None)
+    if anchor_index is None:
+        broken()
+    turn = history[anchor_index + 1:]
+    if not anchor["content"] or not anchor["content"].strip() or any(row["role"] == "user" for row in turn):
+        broken()
+    if not turn or turn[0]["role"] != "assistant":
+        broken()
+    batches = [index for index, row in enumerate(turn) if row["role"] == "assistant"]
+    if not batches or turn[batches[-1]]["id"] != message["id"]:
+        broken()
+
+    for number, start in enumerate(batches):
+        assistant = turn[start]
+        end = batches[number + 1] if number + 1 < len(batches) else len(turn)
+        results = turn[start + 1:end]
+        if (assistant["generation_status"] == "imported" or
+                assistant["tool_batch_status"] != (expected_status if assistant["id"] == message["id"] else "completed") or
+                assistant["origin_user_message_id"] != anchor["id"] or
+                assistant["origin_user_content_sha256"] != message["origin_user_content_sha256"] or
+                assistant["origin_character_id"] != character["id"] or
+                not assistant["tool_calls_json"] or any(row["role"] != "tool" for row in results)):
+            broken()
+        try:
+            calls = json.loads(assistant["tool_calls_json"])
+        except (TypeError, ValueError):
+            broken()
+        if not isinstance(calls, list) or not calls or any(not isinstance(call, dict) or not isinstance(call.get("id"), str) or not call["id"] for call in calls):
+            broken()
+        ids = [call["id"] for call in calls]
+        siblings = db.execute("SELECT * FROM tool_runs WHERE assistant_message_id=?", (assistant["id"],)).fetchall()
+        if len(ids) != len(set(ids)) or len(siblings) != len(ids) or len(results) != len(ids):
+            broken()
+        if assistant["id"] == message["id"] and not any(sibling["id"] == run["id"] for sibling in siblings):
+            broken()
+        by_call = {row["provider_call_id"]: row for row in siblings}
+        by_result = {row["tool_call_id"]: row for row in results}
+        if set(by_call) != set(ids) or set(by_result) != set(ids) or len(by_result) != len(results):
+            broken()
+        for call_id in ids:
+            sibling, result = by_call[call_id], by_result[call_id]
+            if (sibling["conversation_id"] != conversation["id"] or sibling["model_profile_id"] != run["model_profile_id"]
+                    or sibling["status"] not in ("success", "rejected", "invalid", "revoked", "error")
+                    or not sibling["confirmed"] or result["conversation_id"] != conversation["id"]
+                    or result["tool_name"] != sibling["tool_name"] or result["content"] != sibling["result"]):
+                broken()
+    return conversation, character, message, history, anchor["content"]
+
+
 @app.post("/api/chat/tool-runs/{run_id}/continue")
-async def continue_after_tool(run_id: int):
+async def continue_after_tool(run_id: int, request: Request = None):
+    continuous_gate = getattr(app.state, "voice_continuous", None)
+    if continuous_gate and continuous_gate.enabled() and continuous_gate.isolated():
+        raise HTTPException(409, "voice_call_required")
+    generation_id = secrets.token_hex(16)
     with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
         run=db.execute("SELECT * FROM tool_runs WHERE id=?",(run_id,)).fetchone()
         if run is None or run["assistant_message_id"] is None: raise HTTPException(404,"工具调用不存在")
+        if continuous_gate and continuous_gate.conversation_locked(db, run["conversation_id"]):
+            raise HTTPException(409,"该对话正在连续通话中")
         siblings=db.execute("SELECT status FROM tool_runs WHERE assistant_message_id=?",(run["assistant_message_id"],)).fetchall()
         if not siblings or any(row["status"] in ("pending_confirmation","running") for row in siblings): raise HTTPException(409,"请先处理所有待确认工具调用")
-        message=db.execute("SELECT * FROM messages WHERE id=?",(run["assistant_message_id"],)).fetchone()
-        if message["tool_batch_status"]!="awaiting_confirmation": raise HTTPException(409,"这轮工具调用已经继续或完成")
-        changed=db.execute("UPDATE messages SET tool_batch_status='continuing' WHERE id=? AND tool_batch_status='awaiting_confirmation'",(message["id"],)).rowcount
-        if not changed: raise HTTPException(409,"这轮工具调用已经继续或完成")
-        conversation=db.execute("SELECT * FROM conversations WHERE id=?",(run["conversation_id"],)).fetchone()
-        character=db.execute("SELECT * FROM characters WHERE id=?",(conversation["character_id"],)).fetchone()
+        chat_history.assert_idle(db,run["conversation_id"])
+        conversation,character,message,history,topic=verified_tool_turn(db,run)
         profile=db.execute("SELECT * FROM model_profiles WHERE id=? AND enabled=1",(run["model_profile_id"],)).fetchone()
         if profile is None:
-            db.execute("UPDATE messages SET tool_batch_status='awaiting_confirmation' WHERE id=?",(message["id"],))
             raise HTTPException(409,"所用模型配置不存在或已停用")
-        history=db.execute("SELECT * FROM messages WHERE conversation_id=? ORDER BY id",(run["conversation_id"],)).fetchall()
+        chat_requests.begin(db,generation_id,run["conversation_id"],conversation["character_id"],profile,'tool_continuation')
+        desire_advisory=desires.chat_advisory(db,conversation["character_id"],topic)
         blocks=db.execute("SELECT * FROM prompt_blocks WHERE character_id=? ORDER BY order_index,id",(conversation["character_id"],)).fetchall()
-        memories,summary,limit=memory_context(db,conversation["character_id"],run["conversation_id"])
+        chronicle_diagnostics={}
+        memories,summary,limit=memory_context(db,conversation["character_id"],run["conversation_id"],topic, chronicle_owner_id=getattr(request.state, 'user', {}).get('id') if request else None,preview=chronicle_diagnostics)
+        from . import memory_v2_chronicle_tools
+        history = scoped_tool_history(db,run["conversation_id"],conversation["character_id"],getattr(request.state, 'user', {}).get('id') if request else None,history)
         tools,tool_map=available_model_tools(db)
+        changed=db.execute("UPDATE messages SET tool_batch_status='continuing' WHERE id=? AND tool_batch_status='awaiting_confirmation'",(message["id"],)).rowcount
+        if not changed: raise HTTPException(409,"这轮工具调用已经继续或完成")
+        owner_row = db.execute("SELECT id FROM users LIMIT 1").fetchone()
+        owner_id = owner_row[0] if owner_row is not None else None
     is_plan=profile["protocol"]=="chatgpt_plan"
     is_responses=profile["protocol"] in ("openai_responses","chatgpt_plan")
     if is_responses: from . import responses_adapter
     if is_plan: from . import chatgpt_plan
-    request_messages=build_messages(character,blocks,history,None,memories,summary,settings=limit,include_provider_state=is_responses)
-    if is_plan:
-        body=chatgpt_plan.payload(profile,request_messages,tools)
-        url=f"{chatgpt_plan.API_BASE}/responses"
-    elif is_responses:
-        body=responses_adapter.payload(profile,request_messages,tools,True)
-        url=responses_adapter.endpoint(profile["base_url"])
-    else:
-        body={"model":profile["model_name"],"messages":request_messages,"temperature":profile["temperature"],"top_p":profile["top_p"],"max_tokens":profile["max_tokens"],"stream":True}
-        if profile["reasoning_effort"]: body["reasoning_effort"]=profile["reasoning_effort"]
-        if tools: body.update({"tools":tools,"tool_choice":"auto","parallel_tool_calls":False})
-        url=model_url(profile["base_url"])
+    try:
+        with connect() as db: history=chat_protocol.safe_history(db,chat_context.uncovered(db,run['conversation_id'],history),profile)
+        request_messages=build_messages(character,blocks,history,None,memories,summary,settings=limit,include_provider_state=is_responses,desire_advisory=desire_advisory)
+        with connect() as db:
+            request_messages,source_manifest=finalize_chat_context(db,run['conversation_id'],profile,request_messages,history,None,limit,memories,summary,desire_advisory,chronicle_diagnostics,tools)
+        body,url=chat_protocol.serialize(profile,request_messages,tools)
+        chat_requests.wire(connect,generation_id,body,parameters=model_capabilities.effects(profile,body),sources=source_manifest)
+    except Exception:
+        with connect() as db:
+            db.execute("UPDATE chat_attempts SET status='failed',finished_at=?,error_kind='preparation_failed' WHERE id=?",(now(),generation_id))
+            db.execute("UPDATE messages SET tool_batch_status='awaiting_confirmation' WHERE id=? AND tool_batch_status='continuing'",(message['id'],))
+        raise
     async def generate():
-        reply_parts=[]; calls={}; reasoning_parts=[]; visible=("",""); generation_status="completed"; usage=None
+        request_started=time.monotonic()
+        reply_parts=[]; calls={}; reasoning_parts=[]; visible=("",""); generation_status="completed"; usage=None; finish_reason=None
         response_state=responses_adapter.StreamState() if is_responses else None
-        yield sse("message_start",{"conversation_id":run["conversation_id"],"model":profile["model_name"],"mode":"provider","continuation":True})
+        yield sse("message_start",{"conversation_id":run["conversation_id"],"character_id":conversation["character_id"],"owner_id":owner_id,"generation_id":generation_id,"model":profile["model_name"],"mode":"provider","continuation":True})
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(120.0,connect=15.0)) as client:
                 headers={"Authorization":f"Bearer {await chatgpt_plan.access_token()}","Content-Type":"application/json"} if is_plan else auth_headers(profile)
+                # The response stream starts after the atomic claim. Recheck before
+                # contacting the provider in case the source changed meanwhile.
+                with connect() as db:
+                    verified_tool_turn(db,run,expected_status="continuing")
+                chat_requests.dispatched(connect,generation_id)
                 async with client.stream("POST",url,headers=headers,json=body) as response:
                     if response.status_code>=400:
                         detail=(await response.aread()).decode(errors="replace")[:500]
@@ -1863,11 +2351,12 @@ async def continue_after_tool(run_id: int):
                         if raw=="[DONE]": break
                         try: data=json.loads(raw)
                         except json.JSONDecodeError: continue
+                        chat_requests.observe(connect,generation_id,data,(time.monotonic()-request_started)*1000)
                         if response_state:
                             if data.get("type")=="response.failed": raise RuntimeError(chatgpt_plan.error_message(data) if is_plan else "Responses 服务未完成本次回复")
                             if data.get("type")=="response.incomplete": generation_status="incomplete"
                             data=response_state.normalize(data)
-                        choice=(data.get("choices") or [{}])[0]; delta=choice.get("delta",{}) or {}
+                        choice=(data.get("choices") or [{}])[0]; delta=choice.get("delta",{}) or {}; finish_reason=choice.get("finish_reason") or finish_reason
                         usage=data.get("usage") or usage
                         reason=delta.get("reasoning_content") or ""
                         if reason: reasoning_parts.append(reason); yield sse("reasoning_delta",{"text":reason})
@@ -1880,8 +2369,11 @@ async def continue_after_tool(run_id: int):
                             index=part.get("index",0); call=calls.setdefault(index,{"id":"","type":"function","function":{"name":"","arguments":""}})
                             if part.get("id"): call["id"]=part["id"]
                             fn=part.get("function",{}) or {}; call["function"]["name"]+=fn.get("name","") or ""; call["function"]["arguments"]+=fn.get("arguments","") or ""
-            if is_plan and not response_state.completed and generation_status!="incomplete":
+            if is_responses and not response_state.completed and response_state.terminal!="response.incomplete":
                 raise RuntimeError("ChatGPT 套餐回复流未正常完成；请检查账户状态后重试")
+            if not is_responses and finish_reason is None:raise RuntimeError('模型流没有可靠终态，已收到正文与用量保留；未自动重试')
+            if finish_reason in ("length","content_filter","error"): generation_status="incomplete"
+            if calls and generation_status=="incomplete": raise RuntimeError("工具提案未完整生成，不可执行")
             if calls:
                 parsed=[]
                 for _,call in sorted(calls.items()):
@@ -1893,40 +2385,92 @@ async def continue_after_tool(run_id: int):
                     if not isinstance(args,dict): raise RuntimeError("工具参数必须是 JSON 对象；此调用未执行")
                     parsed.append((call,mapped,args))
                 with connect() as db:
-                    cur=db.execute("INSERT INTO messages(conversation_id,role,content,model,tool_calls_json,tool_batch_status,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,usage_json,provider_state_json) VALUES(?,'assistant',?,?,?,'awaiting_confirmation',?,?,?,?,?,?,?)",(run["conversation_id"],visible[0],profile["model_name"],json.dumps([x[0] for x in parsed],ensure_ascii=False),now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,generation_status,json.dumps(usage) if usage else None,json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None))
+                    db.execute("BEGIN IMMEDIATE")
+                    verified_tool_turn(db,run,expected_status="continuing")
+                    cur=db.execute("INSERT INTO messages(conversation_id,role,content,model,tool_calls_json,tool_batch_status,origin_user_message_id,origin_user_content_sha256,origin_character_id,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,usage_json,provider_state_json) VALUES(?,'assistant',?,?,?,'awaiting_confirmation',?,?,?,?,?,?,?,?,?,?)",(run["conversation_id"],visible[0],profile["model_name"],json.dumps([x[0] for x in parsed],ensure_ascii=False),message["origin_user_message_id"],message["origin_user_content_sha256"],message["origin_character_id"],now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,generation_status,json.dumps(usage) if usage else None,json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None))
                     assistant_id=cur.lastrowid; pending=[]
                     for call,mapped,args in parsed:
                         cur=db.execute("INSERT INTO tool_runs(server_id,tool_name,arguments,status,confirmed,created_at,conversation_id,assistant_message_id,provider_call_id,model_profile_id,plugin_tool_id,plugin_name,display_name) VALUES(?,?,?,'pending_confirmation',0,?,?,?,?,?,?,?,?)",(mapped["server_id"],mapped["name"],json.dumps(args,ensure_ascii=False),now(),run["conversation_id"],assistant_id,call["id"],profile["id"],mapped.get("plugin_tool_id"),mapped.get("plugin_name"),mapped.get("display_name")))
                         pending.append({"run_id":cur.lastrowid,"tool_name":mapped["display_name"],"mcp_tool_name":mapped["name"],"server_name":mapped["server_name"],"plugin_name":mapped.get("plugin_name"),"description":mapped["description"],"arguments":args})
                     db.execute("UPDATE messages SET tool_batch_status='completed' WHERE id=?",(run["assistant_message_id"],))
                 for item in pending: yield sse("tool_waiting_confirmation",item)
-                yield sse("tool_batch_waiting",{"conversation_id":run["conversation_id"],"assistant_message_id":assistant_id,"run_ids":[x["run_id"] for x in pending]})
+                with connect() as db: saved = assistant_completion_receipt(db, assistant_id)
+                yield sse("tool_batch_waiting",{"conversation_id":run["conversation_id"],"generation_id":generation_id,"assistant_message_id":assistant_id,"run_ids":[x["run_id"] for x in pending],**saved})
                 return
             reply=visible[0]
             with connect() as db:
-                db.execute("INSERT INTO messages(conversation_id,role,content,model,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,usage_json,provider_state_json) VALUES(?,'assistant',?,?,?,?,?,?,?,?,?)",(run["conversation_id"],reply,profile["model_name"],now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,generation_status,json.dumps(usage) if usage else None,json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None))
+                assistant_id=db.execute("INSERT INTO messages(conversation_id,role,content,model,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,usage_json,provider_state_json) VALUES(?,'assistant',?,?,?,?,?,?,?,?,?)",(run["conversation_id"],reply,profile["model_name"],now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,generation_status,json.dumps(usage) if usage else None,json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None)).lastrowid
                 db.execute("UPDATE messages SET tool_batch_status='completed' WHERE id=?",(run["assistant_message_id"],))
                 db.execute("UPDATE conversations SET updated_at=? WHERE id=?",(now(),run["conversation_id"]))
+                saved = assistant_completion_receipt(db, assistant_id)
             if usage: yield sse("usage",usage)
-            yield sse("message_complete",{"conversation_id":run["conversation_id"],"model":profile["model_name"],"generation_status":generation_status})
+            yield sse("message_complete",{"conversation_id":run["conversation_id"],"generation_id":generation_id,"model":profile["model_name"],"generation_status":generation_status,**saved})
         except asyncio.CancelledError:
             with connect() as db:
                 db.execute("INSERT INTO messages(conversation_id,role,content,model,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,provider_state_json) VALUES(?,'assistant',?,?,?,?,?,?,?,?)",(run["conversation_id"],visible[0],profile["model_name"],now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,"stopped",json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None))
                 db.execute("UPDATE messages SET tool_batch_status='completed' WHERE id=?",(run["assistant_message_id"],))
             raise
         except HTTPException as exc:
-            with connect() as db: db.execute("UPDATE messages SET tool_batch_status='awaiting_confirmation' WHERE id=?",(run["assistant_message_id"],))
+            with connect() as db: db.execute("UPDATE messages SET tool_batch_status='awaiting_confirmation' WHERE id=? AND tool_batch_status='continuing'",(run["assistant_message_id"],))
             yield sse("error",{"message":str(exc.detail)[:500]})
         except Exception as exc:
             with connect() as db: db.execute("UPDATE messages SET tool_batch_status='failed' WHERE id=?",(run["assistant_message_id"],))
             yield sse("error",{"message":str(exc)[:500]})
-    return StreamingResponse(generate(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
+    return StreamingResponse(chat_requests.tracked(generate(),connect,generation_id),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
 
 
 from . import archives
 archives.install(app,connect,now)
+from . import memory_v2_api
+memory_v2_api.install(app, connect, memory_cursor_key)
+# Explicit feature installation only; this branch creates no tables or tasks.
+if os.getenv('YOSAKI_CHRONICLE_WORKSPACE', '0') == '1':
+    from . import memory_v2_chronicle_workspace
+    def approved_chronicle_account(model_id):
+        # A separate explicit deployment flag enables paid UI actions; merely
+        # enabling reading/context cannot spend money or inspect credentials.
+        checked_date = os.getenv('YOSAKI_CHRONICLE_PRICES_VERIFIED_DATE')
+        if checked_date != datetime.now(timezone.utc).date().isoformat():
+            raise ValueError('chronicle_daily_rates_verification_required')
+        with connect() as db:
+            profile=db.execute('SELECT * FROM model_profiles WHERE id=?',(model_id,)).fetchone()
+            if (profile is None or not profile['enabled'] or profile['protocol']!='openai_responses'
+                    or profile['model_name']!='gpt-6.1-sol'
+                    or profile['base_url'].rstrip('/')!='https://api.openai.com/v1'
+                    or not profile['api_key_encrypted']):
+                raise ValueError('chronicle_approved_model_required')
+            key=decrypt_secret(profile['api_key_encrypted'])
+        return key, {
+            'provider':'openai_responses','model':'gpt-6.1-sol','mode':'standard',
+            'inputUsdPerMillion':'2.00','outputUsdPerMillion':'10.00',
+            'checkedAt':checked_date,
+            'sourceUrl':'https://developers.openai.com/api/docs/models/gpt-6.1-sol'}
+    def chronicle_provider(model_id):
+        from .memory_v2_responses_adapter import ResponsesAdapter
+        key, price = approved_chronicle_account(model_id)
+        return ResponsesAdapter(model='gpt-6.1-sol',api_key=key,allow_network=True), price
+    def chronicle_embedding_provider(model_id):
+        # Reuse the same explicitly selected API account and its checked rate
+        # contract; this never borrows a Voice or ChatGPT Plan credential.
+        from .memory_v2_chronicle_embedding import Adapter, MODEL
+        key, price = approved_chronicle_account(model_id)
+        return Adapter(key,allow_network=True),dict(price,provider='openai_embeddings',model=MODEL,inputUsdPerMillion='0.02',outputUsdPerMillion=0)
+    def chronicle_diagnostic(record):
+        from .memory_v2_synopsis import write_isolated_diagnostic
+        directory=DATA/'chronicle-diagnostics'
+        directory.mkdir(exist_ok=True)
+        write_isolated_diagnostic(directory,record)
+    memory_v2_chronicle_workspace.install(app, connect, current_session, allowed_origins=ALLOWED_ORIGINS,
+        diagnostic_sink=chronicle_diagnostic, rate_status=chronicle_rates_status,
+        semantic_factories=(chronicle_provider, chronicle_embedding_provider)
+            if os.getenv('YOSAKI_CHRONICLE_SEMANTIC_SUPPLEMENT')=='1' else None,
+        provider_factory=chronicle_provider if os.getenv('YOSAKI_CHRONICLE_PAID_ENABLED')=='1' else None,
+        embedding_factory=chronicle_embedding_provider if os.getenv('YOSAKI_CHRONICLE_PAID_ENABLED')=='1' else None)
+
 from . import scheduled_backup
-scheduled_backup.install(app,connect,now,build_encrypted_backup,decrypt_backup,DATA)
+scheduled_backup.install(app,connect,now,build_encrypted_backup,decrypt_backup,DATA,DB)
+from . import backup_v2_api
+backup_v2_api.install(app,DB,DATA,current_session,ALLOWED_ORIGINS)
 
 from . import desires
 desires.install(app,connect,now,model_url,auth_headers,mcp_request,validate_tool_arguments)
@@ -1935,82 +2479,244 @@ chatgpt_plan.install(app,DATA,get_fernet)
 
 
 @app.post("/api/chat/regenerate")
-async def regenerate_chat(payload: ChatInput) -> StreamingResponse:
+async def regenerate_chat(payload: ChatInput, request: Request = None) -> StreamingResponse:
+    continuous_gate = getattr(app.state, "voice_continuous", None)
+    if continuous_gate and continuous_gate.enabled() and (
+            continuous_gate.isolated() or continuous_gate.headset_conversation() is not None):
+        raise HTTPException(409, "voice_call_required")
     if payload.conversation_id is None:
         raise HTTPException(422,"重新生成需要已有对话")
-    with connect() as db:
-        last_user=db.execute("SELECT * FROM messages WHERE conversation_id=? AND role='user' ORDER BY id DESC LIMIT 1",(payload.conversation_id,)).fetchone()
-        if last_user is None: raise HTTPException(404,"找不到可重新生成的用户消息")
-        trailing=db.execute("SELECT id FROM messages WHERE conversation_id=? AND id>?",(payload.conversation_id,last_user["id"])).fetchall()
-        trailing_ids=[row["id"] for row in trailing]
-        if trailing_ids:
-            placeholders=','.join('?' for _ in trailing_ids)
-            db.execute(f"DELETE FROM tool_runs WHERE assistant_message_id IN ({placeholders})",trailing_ids)
-            db.execute(f"DELETE FROM messages WHERE id IN ({placeholders})",trailing_ids)
-        db.commit()
-    payload.reuse_last_user=True; payload.message=last_user["content"]
-    return await chat_stream(payload)
+    payload.reuse_last_user=True
+    return await chat_stream(payload, request=request)
+
 
 
 @app.post("/api/chat/stream")
-async def chat_stream(payload: ChatInput) -> StreamingResponse:
+async def chat_stream(payload: ChatInput, request: Request = None) -> StreamingResponse:
+    if not payload.reuse_last_user and not payload.message.strip() and not payload.attachment_ids:
+        raise HTTPException(422,'消息不能为空')
+    if payload.conversation_id and not payload.reuse_last_user and not payload.voice_call_id:
+        with connect() as db:
+            conv=db.execute('SELECT * FROM conversations WHERE id=? AND character_id=?',(payload.conversation_id,payload.character_id)).fetchone()
+            policy=db.execute('SELECT * FROM chat_context_policy WHERE character_id=?',(payload.character_id,)).fetchone()
+            selected=payload.model_profile_id or (conv['model_profile_id'] if conv else None)
+            if not selected:
+                c=db.execute('SELECT default_model_id FROM characters WHERE id=?',(payload.character_id,)).fetchone()
+                selected=c[0] if c else None
+            profile=db.execute('SELECT * FROM model_profiles WHERE id=? AND enabled=1',(selected,)).fetchone() if selected else None
+            if profile is not None:profile=model_capabilities.effective(profile,payload.overrides)
+            chat_attachments.check(db,payload.character_id,payload.attachment_ids,profile)
+            prior=chat_history.rows(db,payload.conversation_id) if conv else []
+            pending=bool(db.execute("SELECT 1 FROM tool_runs WHERE conversation_id=? AND status IN ('pending_confirmation','running')",(payload.conversation_id,)).fetchone())
+            should_summarize=bool(conv and policy and policy['enabled'] and policy['auto_summary'] and profile and not pending and
+                chat_context.estimate([{'role':r['role'],'content':r['content']} for r in chat_context.uncovered(db,payload.conversation_id,prior)]) > (profile['context_limit']-profile['max_tokens'])*policy['trigger_ratio'])
+        if should_summarize:
+            from .chat_api import Auxiliary
+            try:
+                if not policy['summary_model_id']:raise HTTPException(422,'自动摘要尚未指定模型')
+                await chat_generate_summary(payload.conversation_id,Auxiliary(conversation_id=payload.conversation_id,expected_head=payload.expected_head,model_id=policy['summary_model_id']))
+            except HTTPException as exc:
+                # Failed compression must not silently drop the history that it
+                # was supposed to preserve, nor dispatch the primary request.
+                raise HTTPException(409,'连续性摘要未完成，原历史保留；本条未派发。'+str(exc.detail)) from exc
+    continuous_gate = getattr(app.state, "voice_continuous", None)
+    headset = bool(continuous_gate and continuous_gate.headset_conversation() is not None)
+    single_button = bool(continuous_gate and continuous_gate.single_button_conversation() is not None)
+    capped_voice_acceptance = bool(payload.voice_call_id and continuous_gate and
+                                  continuous_gate.acceptance())
+    button_acceptance = capped_voice_acceptance and not headset
+    if (continuous_gate and continuous_gate.enabled() and
+            (continuous_gate.isolated() or headset or single_button) and not payload.voice_call_id):
+        raise HTTPException(409, "voice_call_required")
+    headset_turn = 0
+    generation_id = secrets.token_hex(16)
     if not payload.reuse_last_user and not payload.message.strip():
-        raise HTTPException(422, '消息不能为空')
+        if payload.attachment_ids:payload.message='[附件]'
+        else:raise HTTPException(422, '消息不能为空')
     with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
         character=db.execute("SELECT * FROM characters WHERE id=?",(payload.character_id,)).fetchone()
         if character is None: raise HTTPException(404,"角色不存在")
         conversation_id=payload.conversation_id; profile_id=payload.model_profile_id
         if conversation_id is not None:
             conv=db.execute("SELECT * FROM conversations WHERE id=? AND character_id=?",(conversation_id,payload.character_id)).fetchone()
             if conv is None: raise HTTPException(404,"对话不存在")
+            require_live_conversation(db, conversation_id)
+            if (continuous_gate and not payload.voice_call_id and
+                    continuous_gate.conversation_locked(db, conversation_id)):
+                raise HTTPException(409,"该对话正在连续通话中")
             if profile_id is None: profile_id=conv["model_profile_id"]
         if profile_id is None: profile_id=character["default_model_id"]
         profile=db.execute("SELECT * FROM model_profiles WHERE id=? AND enabled=1",(profile_id,)).fetchone() if profile_id else None
+        if profile is not None:
+            profile=model_capabilities.effective(profile,payload.overrides)
+        if button_acceptance and (not profile or profile["protocol"] != "chatgpt_plan"):
+            raise HTTPException(409, "按钮打断验收已停止：所选模型接口无法确认支持输出 token 上限")
+        owner_row = db.execute("SELECT id FROM users LIMIT 1").fetchone()
+        owner_id = owner_row[0] if owner_row is not None else None
+        if payload.voice_call_id or payload.voice_call_turn_id:
+            call_manager = getattr(app.state, "voice_continuous", None)
+            if (call_manager is None or not payload.voice_call_id or
+                    not payload.voice_call_turn_id or payload.reuse_last_user or
+                    conversation_id is None or profile_id is None or owner_id is None):
+                raise HTTPException(409, "连续通话轮次无效")
+            try:
+                if headset and (not profile or profile["protocol"] != "chatgpt_plan" or
+                                profile["model_name"] != "gpt-6.1-sol"):
+                    raise ValueError("voice_call_headset_model_invalid")
+                voice_turn = call_manager.claim_model(payload.voice_call_id, payload.voice_call_turn_id,
+                                         owner_id, payload.character_id, conversation_id,
+                                         profile_id, payload.message.strip(), db=db)
+                if headset:
+                    headset_turn = voice_turn
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
         stamp=now()
         if conversation_id is None:
             cur=db.execute("INSERT INTO conversations(character_id,title,model_profile_id,created_at,updated_at) VALUES(?,?,?,?,?)",(payload.character_id,payload.message[:30],profile_id,stamp,stamp)); conversation_id=cur.lastrowid
+        if payload.attachment_ids and payload.reuse_last_user:
+            raise HTTPException(422,"重新生成使用原消息附件，不能临时替换")
+        chat_attachments.check(db,payload.character_id,payload.attachment_ids,profile)
+        if payload.reuse_last_user:
+            if payload.voice_call_id:
+                raise HTTPException(409,'通话期间不能重新生成')
+            chat_history.assert_idle(db,conversation_id)
+            previous=chat_history.check_head(db,conversation_id,payload.expected_head)
+            target=next((i for i,row in enumerate(previous) if row['id']==payload.target_message_id),None) if payload.target_message_id else len(previous)-1
+            if target is None: raise HTTPException(404,'消息不在当前路径')
+            user_pos=next((i for i in range(target,-1,-1) if previous[i]['role']=='user'),None)
+            if user_pos is None: raise HTTPException(404,'找不到可重新生成的用户消息')
+            last_user=previous[user_pos]
+            if any(row['role']=='user' or row.get('inherited') for row in previous[user_pos+1:]):
+                conversation_id=chat_history.fork(db,conversation_id,last_user['id'],stamp)
+                payload.conversation_id=conversation_id
+            else:
+                if db.execute("SELECT 1 FROM tool_runs WHERE conversation_id=? AND status='running'",(conversation_id,)).fetchone():
+                    raise HTTPException(409,'工具正在执行，请等待结束')
+                chat_history.hide(db,[row['id'] for row in previous[user_pos+1:]],stamp,group=last_user['id'])
+            payload.message=last_user['content']
+        chat_requests.begin(db,generation_id,conversation_id,payload.character_id,profile,'regenerate' if payload.reuse_last_user else 'chat',None if payload.reuse_last_user else payload.expected_head)
         unresolved=db.execute("SELECT 1 FROM tool_runs WHERE conversation_id=? AND status IN ('pending_confirmation','running') LIMIT 1",(conversation_id,)).fetchone()
         if unresolved:
             raise HTTPException(409,"当前对话有待处理的工具调用，请先确认或拒绝，再继续聊天")
-        history=db.execute("SELECT * FROM messages WHERE conversation_id=? ORDER BY id",(conversation_id,)).fetchall()
+        if db.execute("SELECT 1 FROM messages WHERE conversation_id=? AND tool_batch_status='continuing' LIMIT 1",(conversation_id,)).fetchone():
+            raise HTTPException(409,"当前对话有正在继续的工具回合，请等待其结束")
+        stored_history=chat_history.rows(db,conversation_id)
         blocks=db.execute("SELECT * FROM prompt_blocks WHERE character_id=? ORDER BY order_index,id",(payload.character_id,)).fetchall()
-        memories,summary,history_limit=memory_context(db,payload.character_id,conversation_id,payload.message)
+        chronicle_diagnostics={}
+        memories,summary,history_limit=memory_context(db,payload.character_id,conversation_id,payload.message, chronicle_owner_id=getattr(request.state, 'user', {}).get('id') if request else None,preview=chronicle_diagnostics)
+        from . import memory_v2_chronicle_tools
+        history = scoped_tool_history(db,conversation_id,payload.character_id,getattr(request.state, 'user', {}).get('id') if request else None,stored_history)
         desire_advisory=desires.chat_advisory(db,payload.character_id,payload.message)
+        if payload.reuse_last_user:
+            last_user=next((row for row in reversed(history) if row["role"]=="user"),None)
+            if last_user is None or history[-1]["id"]!=last_user["id"] or last_user["content"]!=payload.message:
+                raise HTTPException(409,"原始用户消息已变更；请重新发送消息")
+            user_message_id=last_user["id"]
+            history=history[:-1]
+            stored_history=stored_history[:-1]
+        else:
+            user_message_id=db.execute("INSERT INTO messages(conversation_id,role,content,created_at) VALUES(?,'user',?,?)",(conversation_id,payload.message,stamp)).lastrowid
         if not payload.reuse_last_user:
-            db.execute("INSERT INTO messages(conversation_id,role,content,created_at) VALUES(?,'user',?,?)",(conversation_id,payload.message,stamp))
+            chat_attachments.bind(db,user_message_id,payload.attachment_ids)
+            if payload.quote:
+                source=chat_history.visible(db,conversation_id,payload.quote.get('message_id'))
+                excerpt=payload.quote.get('excerpt')
+                if not source or not isinstance(excerpt,str) or not excerpt or len(excerpt)>10000 or excerpt not in source['content']:
+                    raise HTTPException(422,'引用不是当前路径中的原文片段')
+                db.execute('INSERT INTO chat_quotes VALUES(?,?,?,?)',(user_message_id,source['id'],chat_history.digest(source['content']),excerpt))
+        db.execute('UPDATE chat_attempts SET origin_message_id=? WHERE id=?',(user_message_id,generation_id))
+        if payload.chronicle_supplement_max_microusd:
+            db.execute('UPDATE chat_attempts SET parameters_json=? WHERE id=?',
+                (json.dumps({'chronicleSupplement': chronicle_wait_metadata(payload)}), generation_id))
+        user_content_sha256=tool_origin_fingerprint(payload.message)
         db.execute("UPDATE conversations SET model_profile_id=?,updated_at=? WHERE id=?",(profile_id,stamp,conversation_id)); db.commit()
         tool_defs,tool_map=available_model_tools(db) if profile else ([],{})
+        if payload.voice_call_id and continuous_gate and (continuous_gate.isolated() or headset or single_button):
+            # The isolated acceptance uses only the bound conversation's turns
+            # plus the character prompt; it never pulls unrelated memories,
+            # summaries, desire advice, or callable tools into this test batch.
+            memories=[]; summary=None; desire_advisory=None
+            tool_defs=[]; tool_map={}
     async def generate() -> AsyncIterator[str]:
+        request_started=time.monotonic()
         used_model=profile["model_name"] if profile else payload.model
         if profile is None:
             reply=demo_reply(character["name"],payload.message)
-            yield sse("message_start",{"conversation_id":conversation_id,"model":used_model,"mode":"demo"})
+            yield sse("message_start",{"conversation_id":conversation_id,"character_id":payload.character_id,"owner_id":owner_id,"generation_id":generation_id,"model":used_model,"mode":"demo"})
             for chunk in reply:
                 await asyncio.sleep(0.008); yield sse("text_delta",{"text":chunk})
-            with connect() as db: db.execute("INSERT INTO messages(conversation_id,role,content,model,created_at) VALUES(?,'assistant',?,?,?)",(conversation_id,reply,used_model,now()))
-            yield sse("message_complete",{"conversation_id":conversation_id,"model":used_model}); return
+            with connect() as db:
+                assistant_id=db.execute("INSERT INTO messages(conversation_id,role,content,model,created_at) VALUES(?,'assistant',?,?,?)",(conversation_id,reply,used_model,now())).lastrowid
+                saved=assistant_completion_receipt(db, assistant_id)
+            yield sse("message_complete",{"conversation_id":conversation_id,"generation_id":generation_id,"model":used_model,"generation_status":"completed","voice_auto_read_eligible":True,**saved}); return
         is_plan=profile["protocol"]=="chatgpt_plan"
         is_responses=profile["protocol"] in ("openai_responses","chatgpt_plan")
         if is_responses: from . import responses_adapter
         if is_plan: from . import chatgpt_plan
-        request_messages=build_messages(character,blocks,history,payload.message,memories,summary,settings=history_limit,include_provider_state=is_responses,desire_advisory=desire_advisory)
+        reviewed_voice_chat=(is_plan and os.getenv("YOSAKI_CHAT_VOICE_DISPLAY_GATED_ISOLATED", "0")=="1")
+        if reviewed_voice_chat:
+            from .voice.realtime_answer_display import AnswerDisplayGate
+            display_gate=AnswerDisplayGate()
+        request_history=voice_call_history(history) if payload.voice_call_id else history
+        selected_memories = memories
+        if not single_button and history_limit.get('memory_enabled') and payload.chronicle_supplement_max_microusd:
+            supplement = await chat_chronicle_supplement(payload,request,profile,generation_id)
+            if supplement is not None:
+                try:
+                    current_owner = (current_session(request) or {}).get('id')
+                    if current_owner != request.state.user['id']:
+                        yield sse('error', {'message':'登录资格已变化，本次回复已停止；已发生用量仍按原规则结算。'})
+                        return
+                    with connect() as db:
+                        if not db.execute('SELECT 1 FROM characters WHERE id=? AND enabled=1', (payload.character_id,)).fetchone():
+                            yield sse('error', {'message':'角色已停用，本次回复已停止；已发生用量仍按原规则结算。'})
+                            return
+                        selected_memories, _, _ = memory_context(db,payload.character_id,conversation_id,
+                            payload.message,chronicle_owner_id=current_owner,supplement=supplement)
+                        request_history = scoped_tool_history(db,conversation_id,payload.character_id,current_owner,stored_history)
+                except sqlite3.Error:
+                    selected_memories = [row for row in memories if
+                        'channel' not in row.keys() or row['channel'] != 'chronicle']
+                    request_history = memory_v2_chronicle_tools.refresh_history(None,payload.character_id,None,stored_history)
+        with connect() as db: request_history=chat_protocol.safe_history(db,chat_context.uncovered(db,conversation_id,request_history),profile)
+        request_messages=build_messages(character,blocks,request_history,payload.message,selected_memories,summary,settings=history_limit,include_provider_state=is_responses,desire_advisory=desire_advisory)
+        with connect() as db:
+            request_messages,source_manifest=finalize_chat_context(db,conversation_id,profile,request_messages,request_history,user_message_id,history_limit,selected_memories,summary,desire_advisory,chronicle_diagnostics,tool_defs)
         if is_plan:
-            body=chatgpt_plan.payload(profile,request_messages,tool_defs)
-            url=f"{chatgpt_plan.API_BASE}/responses"
-        elif is_responses:
-            body=responses_adapter.payload(profile,request_messages,tool_defs,True)
-            url=responses_adapter.endpoint(profile["base_url"])
-        else:
-            body={"model":profile["model_name"],"messages":request_messages,"temperature":profile["temperature"],"top_p":profile["top_p"],"max_tokens":profile["max_tokens"],"stream":True}
-            if profile["reasoning_effort"]: body["reasoning_effort"]=profile["reasoning_effort"]
-            if tool_defs: body.update({"tools":tool_defs,"tool_choice":"auto","parallel_tool_calls":False})
-            url=model_url(profile["base_url"])
-        yield sse("message_start",{"conversation_id":conversation_id,"model":used_model,"mode":"provider"})
+            if single_button:
+                request_messages.append({"role":"system", "content":
+                    "朗読の動作確認です。公開する日本語の返答は、改行と句読点を含め80文字以内の短い三段落にしてください。"})
+            if headset_turn:
+                instruction = ("日本語で、約100字（110字以内）の自然な文章で答えてください。"
+                               if headset_turn == 1 else
+                               "この返答は日本語の一文にし、句読点を含めて50字以内にしてください。")
+                request_messages.append({"role":"system", "content":instruction})
+        body,url=chat_protocol.serialize(profile,request_messages,tool_defs)
+        if is_plan and (capped_voice_acceptance or headset_turn):
+            body['max_output_tokens']=min(profile['max_tokens'],2048)
+        request_parameters = model_capabilities.effects(profile,body)
+        if payload.chronicle_supplement_max_microusd:
+            request_parameters['chronicleSupplement'] = chronicle_wait_metadata(payload)
+        chat_requests.wire(connect,generation_id,body,parameters=request_parameters,sources=source_manifest)
+        yield sse("message_start",{"conversation_id":conversation_id,"character_id":payload.character_id,"owner_id":owner_id,"generation_id":generation_id,"model":used_model,"mode":"provider"})
         reply_parts=[]; calls={}; finish_reason=None; reasoning_parts=[]; visible=("",""); generation_status="completed"; usage=None
         response_state=responses_adapter.StreamState() if is_responses else None
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0,connect=15.0)) as client:
-                headers={"Authorization":f"Bearer {await chatgpt_plan.access_token()}","Content-Type":"application/json"} if is_plan else auth_headers(profile)
+            client_options = {}
+            if button_acceptance:
+                from .voice.continuous_call import validate_button_acceptance_request
+                client_options["event_hooks"] = {"request": [validate_button_acceptance_request]}
+            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0,connect=15.0),
+                                         **client_options) as client:
+                if is_plan:
+                    token = (await chatgpt_plan.access_token(allow_refresh=False)
+                             if capped_voice_acceptance or headset_turn
+                             else await chatgpt_plan.access_token())
+                    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                else:
+                    headers = auth_headers(profile)
+                chat_requests.dispatched(connect,generation_id)
                 async with client.stream("POST",url,headers=headers,json=body) as response:
                     if response.status_code>=400:
                         if is_plan:
@@ -2018,43 +2724,97 @@ async def chat_stream(payload: ChatInput) -> StreamingResponse:
                         else:
                             detail=(await response.aread()).decode(errors="replace")[:500]; yield sse("error",{"message":f"模型服务返回 HTTP {response.status_code}：{detail}"})
                         return
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:"): continue
-                        raw=line[5:].strip()
-                        if raw=="[DONE]": break
-                        try: data=json.loads(raw)
-                        except json.JSONDecodeError: continue
+                    async def wire_events():
+                        if reviewed_voice_chat:
+                            async for item in responses_adapter.iter_sse_events(response.aiter_lines()):
+                                yield item
+                        else:
+                            async for line in response.aiter_lines():
+                                if not line.startswith("data:"): continue
+                                raw=line[5:].strip()
+                                if raw=="[DONE]": break
+                                try: yield json.loads(raw)
+                                except json.JSONDecodeError: continue
+                    async for data in wire_events():
+                        if payload.voice_call_id and not app.state.voice_continuous.model_active(
+                                payload.voice_call_id, payload.voice_call_turn_id, owner_id):
+                            return  # Interrupted round: never publish late text or completion.
+                        chat_requests.observe(connect,generation_id,data,(time.monotonic()-request_started)*1000)
                         if response_state:
                             if data.get("type")=="response.failed": raise RuntimeError(chatgpt_plan.error_message(data) if is_plan else "Responses 服务未完成本次回复")
                             if data.get("type")=="response.incomplete": generation_status="incomplete"
+                            if reviewed_voice_chat:
+                                classification=responses_adapter.classify_candidate_event(data)
+                                if classification=="unsupported" or classification in responses_adapter.METADATA_STOPS and classification!="metadata_answer_moderation":
+                                    raise RuntimeError("本次回复包含未支持的展示控制事件，已停止公开与朗读")
+                                display_gate.observe(data)
+                                if classification in ("notice","metadata_answer_moderation"):
+                                    continue
                             data=response_state.normalize(data)
                         usage=data.get("usage") or usage
                         choice=(data.get("choices") or [{}])[0]; delta=choice.get("delta",{}) or {}; finish_reason=choice.get("finish_reason") or finish_reason
                         reason=delta.get("reasoning_content") or ""
-                        if reason: reasoning_parts.append(reason); yield sse("reasoning_delta",{"text":reason})
+                        if reason:
+                            reasoning_parts.append(reason)
+                            if not reviewed_voice_chat: yield sse("reasoning_delta",{"text":reason})
                         text=delta.get("content") or ""
                         if text:
                             reply_parts.append(text)
                             visible,generation_status,events=reply_events("".join(reply_parts),visible,bool(history_limit.get("monologue_enabled")))
-                            for event in events: yield event
+                            if not reviewed_voice_chat:
+                                for event in events: yield event
                         for part in delta.get("tool_calls",[]) or []:
                             idx=part.get("index",0); call=calls.setdefault(idx,{"id":"","type":"function","function":{"name":"","arguments":""}})
                             if part.get("id"): call["id"]=part["id"]
                             fn=part.get("function",{}) or {}; call["function"]["name"]+=fn.get("name","") or ""; call["function"]["arguments"]+=fn.get("arguments","") or ""
         except asyncio.CancelledError:
+            if payload.voice_call_id and payload.voice_call_turn_id and owner_id is not None:
+                app.state.voice_continuous.model_cancel_observed(
+                    payload.voice_call_id, payload.voice_call_turn_id, owner_id)
             with connect() as db:
                 db.execute("INSERT INTO messages(conversation_id,role,content,model,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,provider_state_json) VALUES(?,'assistant',?,?,?,?,?,?,?,?)",(conversation_id,visible[0],used_model,now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,"stopped",json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None))
             raise
         except httpx.HTTPError as exc:
-            yield sse("error",{"message":f"连接模型服务失败：{exc}"}); return
+            # Some httpx transport errors have an empty string representation.
+            # Keep the safe exception class so a failed call is diagnosable.
+            kind = type(exc).__name__
+            if kind not in {"ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout",
+                            "ConnectError", "ReadError", "WriteError", "CloseError",
+                            "RemoteProtocolError", "LocalProtocolError", "ProxyError"}:
+                kind = "HTTPError"
+            yield sse("error",{"message":f"连接模型服务失败（{kind}）；本轮不会自动重试"}); return
         except HTTPException as exc:
             yield sse("error",{"message":str(exc.detail)[:500]}); return
         except RuntimeError as exc:
             yield sse("error",{"message":str(exc)}); return
-        if is_plan and not response_state.completed and generation_status!="incomplete":
+        if is_responses and not response_state.completed and response_state.terminal!="response.incomplete":
             yield sse("error",{"message":"ChatGPT 套餐回复流未正常完成；请检查账户状态后重试"})
             return
+        if not is_responses and finish_reason is None:
+            yield sse('error',{'message':'模型流没有可靠终态，已收到正文与用量保留；未自动重试'})
+            return
+        if finish_reason in ("length","content_filter","error"): generation_status="incomplete"
+        if payload.voice_call_id and not app.state.voice_continuous.model_active(
+                payload.voice_call_id, payload.voice_call_turn_id, owner_id):
+            return
+        if reviewed_voice_chat:
+            reviewed=display_gate.finish(model_completed=(response_state.completed and generation_status=="completed"),
+                                         public_text="".join(reply_parts))
+            if reviewed.action!="allow":
+                if payload.voice_call_id:
+                    from .voice.continuous_call import CALL_EVENT_LOG
+                    CALL_EVENT_LOG.warning("%s", json.dumps({
+                        "event":"model_display_rejected", "call_id":payload.voice_call_id,
+                        "turn_id":payload.voice_call_turn_id,
+                        "model_completed":response_state.completed, **reviewed.diagnostic(),
+                    }, separators=(",", ":")))
+                yield sse("error",{"message":"本次回复未通过展示核验，文字与自动朗读均已停止"})
+                return
+            # The isolated reviewed mode publishes only after the full answer is bound.
+            if visible[0]: yield sse("text_delta",{"text":visible[0]})
         reply=visible[0]
+        if calls and generation_status=="incomplete":
+            yield sse("error",{"message":"工具提案未完整生成，不可执行"}); return
         if calls:
             parsed_calls=[]
             for index,call in sorted(calls.items()):
@@ -2070,18 +2830,38 @@ async def chat_stream(payload: ChatInput) -> StreamingResponse:
                 if not isinstance(args,dict):
                     yield sse("error",{"message":"工具参数必须是 JSON 对象，已拒绝执行"}); return
                 parsed_calls.append((call,mapped,args))
-            with connect() as db:
-                cur=db.execute("INSERT INTO messages(conversation_id,role,content,model,tool_calls_json,tool_batch_status,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,usage_json,provider_state_json) VALUES(?,'assistant',?,?,?,'awaiting_confirmation',?,?,?,?,?,?,?)",(conversation_id,reply,used_model,json.dumps([x[0] for x in parsed_calls],ensure_ascii=False),now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,generation_status,json.dumps(usage) if usage else None,json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None))
-                assistant_id=cur.lastrowid; pending=[]
-                for call,mapped,args in parsed_calls:
-                    cur=db.execute("INSERT INTO tool_runs(server_id,tool_name,arguments,status,confirmed,created_at,conversation_id,assistant_message_id,provider_call_id,model_profile_id,plugin_tool_id,plugin_name,display_name) VALUES(?,?,?,'pending_confirmation',0,?,?,?,?,?,?,?,?)",(mapped["server_id"],mapped["name"],json.dumps(args,ensure_ascii=False),now(),conversation_id,assistant_id,call["id"],profile_id,mapped.get("plugin_tool_id"),mapped.get("plugin_name"),mapped.get("display_name")))
-                    pending.append({"run_id":cur.lastrowid,"tool_name":mapped["display_name"],"mcp_tool_name":mapped["name"],"server_name":mapped["server_name"],"plugin_name":mapped.get("plugin_name"),"description":mapped["description"],"arguments":args})
+            try:
+                with connect() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    require_tool_origin(db,conversation_id,payload.character_id,user_message_id,user_content_sha256,must_be_last=True)
+                    cur=db.execute("INSERT INTO messages(conversation_id,role,content,model,tool_calls_json,tool_batch_status,origin_user_message_id,origin_user_content_sha256,origin_character_id,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,usage_json,provider_state_json) VALUES(?,'assistant',?,?,?,'awaiting_confirmation',?,?,?,?,?,?,?,?,?,?)",(conversation_id,reply,used_model,json.dumps([x[0] for x in parsed_calls],ensure_ascii=False),user_message_id,user_content_sha256,payload.character_id,now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,generation_status,json.dumps(usage) if usage else None,json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None))
+                    assistant_id=cur.lastrowid; pending=[]
+                    for call,mapped,args in parsed_calls:
+                        cur=db.execute("INSERT INTO tool_runs(server_id,tool_name,arguments,status,confirmed,created_at,conversation_id,assistant_message_id,provider_call_id,model_profile_id,plugin_tool_id,plugin_name,display_name) VALUES(?,?,?,'pending_confirmation',0,?,?,?,?,?,?,?,?)",(mapped["server_id"],mapped["name"],json.dumps(args,ensure_ascii=False),now(),conversation_id,assistant_id,call["id"],profile_id,mapped.get("plugin_tool_id"),mapped.get("plugin_name"),mapped.get("display_name")))
+                        pending.append({"run_id":cur.lastrowid,"tool_name":mapped["display_name"],"mcp_tool_name":mapped["name"],"server_name":mapped["server_name"],"plugin_name":mapped.get("plugin_name"),"description":mapped["description"],"arguments":args})
+            except HTTPException as exc:
+                yield sse("error",{"message":str(exc.detail)[:500]})
+                return
+            with connect() as db: saved=assistant_completion_receipt(db, assistant_id)
             for item in pending: yield sse("tool_waiting_confirmation",item)
-            yield sse("tool_batch_waiting",{"conversation_id":conversation_id,"assistant_message_id":assistant_id,"run_ids":[x["run_id"] for x in pending]})
+            yield sse("tool_batch_waiting",{"conversation_id":conversation_id,"generation_id":generation_id,"assistant_message_id":assistant_id,"run_ids":[x["run_id"] for x in pending],**saved})
             return
         with connect() as db:
-            db.execute("INSERT INTO messages(conversation_id,role,content,model,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,usage_json,provider_state_json) VALUES(?,'assistant',?,?,?,?,?,?,?,?,?)",(conversation_id,reply,used_model,now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,generation_status,json.dumps(usage) if usage else None,json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None))
+            assistant_id=db.execute("INSERT INTO messages(conversation_id,role,content,model,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,usage_json,provider_state_json) VALUES(?,'assistant',?,?,?,?,?,?,?,?,?)",(conversation_id,reply,used_model,now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,generation_status,json.dumps(usage) if usage else None,json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None)).lastrowid
             db.execute("UPDATE conversations SET updated_at=? WHERE id=?",(now(),conversation_id))
+            saved=assistant_completion_receipt(db, assistant_id)
+            if reviewed_voice_chat and generation_status=="completed" and not payload.voice_call_id and app.state.voice_ai_http is not None:
+                from .voice.ai_daily import record_completion
+                record_completion(db,assistant_id,owner_id,generation_id,reviewed,
+                    model_completed=response_state.completed,stream_ended=True)
+        if payload.voice_call_id and not app.state.voice_continuous.finish_model(
+                payload.voice_call_id, payload.voice_call_turn_id, owner_id, assistant_id):
+            return
         if usage: yield sse("usage",usage)
-        yield sse("message_complete",{"conversation_id":conversation_id,"model":used_model,"finish_reason":finish_reason,"generation_status":generation_status})
-    return StreamingResponse(generate(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
+        yield sse("message_complete",{"conversation_id":conversation_id,"generation_id":generation_id,"model":used_model,"finish_reason":finish_reason,"generation_status":generation_status,"voice_auto_read_eligible":reviewed_voice_chat and generation_status=="completed",**saved})
+    return StreamingResponse(chat_requests.tracked(generate(),connect,generation_id),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
+
+
+from . import chat_api
+import sys as _sys
+chat_api.install(_sys.modules[__name__])

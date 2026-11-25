@@ -6,6 +6,8 @@
 
 Owner 只参与无法代办的凭据输入／系统人工确认、主观体验与内容取舍，以及超出现有授权的外发、付费、迁移、服务切换或范围变更。确需参与时，一次说明具体阻挡、建议和已准备好的最小执行范围；已获授权的常规步骤不重复确认。遇到阻塞保留准确状态，并继续完成独立事项，不绕过工具审查或数据保护。
 
+冻结候选预检须区分“实际执行源码／前端资源／请求／权限／预算变化”和“工作区其他并行变化”。后者先读取差异，必要时以新鲜数据库副本及假供应商验证模块加载、启动／Schema／读写兼容性和本次路径；证实不影响冻结候选及共享数据后，在既有授权内记录接受的环境基线，不仅因旁支文件哈希变化要求重新批准。端口冲突优先选空闲端口并记录绑定，不接管／关闭其他进程。实际输入、音色、调用量或权限需扩大，或共享兼容问题未解决时才停止；旧批终态、旧收据及原Manifest不得改写，后继批次与环境差异须明确记录。（Owner明确要求，2026-11-25）
+
 交付正文直接说明完成内容、是否生效、验证结果、备份／恢复位置及剩余事项；关键修改同步摘出，不只让 Owner 到文件中查找。Memory 交接仍更新原C1～C10总表，区分09与其余12条及各自证据，不只在末尾补记。以上分工不扩大任何原有授权，不改 Memory／Voice 的来源、展示、权限和计量规则，不覆盖既存未提交工作。
 
 > Memory V2 当前收口以 `docs/MEMORY_V2_EXECUTION_PLAN.md` 为产品与交付基线，每轮完整读取。范围内连续实施、测试和修复，不按旧阶段逐个请求继续。精修正文、单经历梗概与周期摘要必须分开；阿夜记忆通道不得返回 RAW／CLEANED，展开到精修正文。保留来源、权限、unknown、结算和数据保护。交付以 C1～C10 的实际结果为准，不增加未经用户要求的功能或通过门槛。历史状态不代表当前实现；已核实差异在同一任务内修正。不得覆盖既有未提交工作。
@@ -16,7 +18,7 @@ Owner 只参与无法代办的凭据输入／系统人工确认、主观体验�
 
 > 本文件记录当前项目的结构、运行方式、功能边界、安全约束和验证状态，供后续开发、调试、审查和部署使用。
 > 适用目录：`D:\AI xiangmu\自建前端`
-> 最近核对：2026-11-18（Asia/Hong_Kong）。Memory V2 当前状态以第 55 节和 `docs/MEMORY_V2_EXECUTION_PLAN.md` 最新 C1～C10 为准；Voice 以其最新专项记录为准。第 49～54 节和旧交接保留当时状态，不能据旧段落推断当前未部署或已验收。
+> 最近Voice现场核对：2026-11-19（Asia/Hong_Kong），第4步限定安装及实际HTTP页面检查见 `docs/VOICE_STEP4_DAILY_INSTALL_20261119.md`。其他模块现场状态不由本次检查扩大。交接见第56节及其后续补记；Memory V2 的产品与交付基线及 C1～C10 实际结果以 `docs/MEMORY_V2_EXECUTION_PLAN.md` 为准，Voice 以 `docs/VOICE_DELIVERY_INDEX.md` 和最新专项记录为准。第 49～55 节保留其当时状态。
 
 ## 1. 项目定位与当前状态
 
@@ -47,9 +49,9 @@ Owner 只参与无法代办的凭据输入／系统人工确认、主观体验�
 - 加密 `.ybackup` 全量 SQLite 快照导出/导入。
 - 欲望系统 Phase 1～6：驱力、意愿与未决池、有界自由活动、经确认的体验反馈、可追溯长期学习、模拟心理状态。
 - 本机可选的 ChatGPT 套餐 OAuth 模型档案；在隔离角色中实测了欲望系统的结构化调用及本地环境操作。
-- Memory V2：Chronicle 管理、受资格保护的记忆上下文及手动／逐条同意的语义补查已按受控流程加载；日常付费周期加工保持关闭。H5-B 已在正式库保存 130 条有序来源及 13 条管理草稿，13 份精修保留、11 份梗概可审，05／07仍待补。内容确认和发布由 Owner 操作；最新证据与限制见第 55 节。
+- Memory V2：Chronicle 管理、受资格保护的记忆上下文及手动／逐条同意的语义补查已按受控流程加载；日常付费周期加工保持关闭。H5-B 正式库有 130 条有序来源、13 条经历及13份精修正文／13份单经历梗概（09已确认发布，其余12条待审）；05／07 已经独立8192容量版本补齐，原可靠 incomplete 历史保留。按2026-11-19已留存资格核对，仅09当前标题／梗概已确认、精修已确认关联并发布，文档向量已建；该问法手动补搜及展开通过、Hybrid未命中。其余01～08、10～13共12条仍为未发布管理草稿，不能获得正式召回资格；2026-11-25新增限定真实验收：单条12/30秒已加载并经离线及实际界面验证，09一次30秒被动注入通过（首轮仅工具提议），独立明确指令下搜索/确认/完整精修展开/确认/续答通过；不推定自然问法全链、稳定性或Owner质量通过。核价至香港2026-11-26 08:00有效、不自动续期。以执行计划更新后的C1～C10及最终使用说明为准，第55～56节保留历史时点。
 - H5 V2 加密大容量备份及独立恢复已在隔离环境实现；HTTP 入口默认关闭，旧上传恢复入口拒绝直接替换活动数据库。
-- Voice：V1-A 档案与告知、V2 HTTP 已保存消息朗读、Scribe 主动录音草稿、默认关闭的自动朗读，以及需用户主动确认的日常连续通话已有分项实现和限定验收。真实 Provider 请求和日常库 Voice 迁移已有受控记录；V1-B 整体、固定 Benchmark、跨设备及长期稳定性均不能据此宣称通过。最新运行故障与日额度见第 54 节。
+- Voice：档案与告知、HTTP 消息朗读与缓存、主动录音草稿、可选自动朗读及需用户主动确认的日常连续通话已启用；通话默认 HTTP，可手选 TTD WS。生成中按键打断接续、HTTP 播放停音和耳机插话各有范围有限的真实验收。多位置 AI 规划已有一次真实建议贴切和两位置声学单样本认可；普通聊天短日语单请求 HTTP 已于2026-11-19受控安装，用户AI设置仍默认关闭，新的真实产品听评待验；通话、WS与更多语言的新AI表达未接入。长文多请求首段结果 unknown、固定 Benchmark 与跨设备稳定性未完成。以 `docs/VOICE_DELIVERY_INDEX.md` 为当前入口，旧第54节语音故障与额度数字仅作当时记录。
 - Docker/Nginx/VPS 部署骨架。
 
 ## 2. 目录结构
@@ -87,9 +89,11 @@ Owner 只参与无法代办的凭据输入／系统人工确认、主观体验�
 │     ├─ FeedbackPanel.vue         # Phase 4 体验反馈审阅
 │     ├─ LearningPanel.vue         # Phase 5 长期学习与偏好时间线
 │     ├─ PsychologyPanel.vue       # Phase 6 模拟心理状态与冲突来源
-│     ├─ ChronicleApp.vue          # 可选 /chronicle 独立阅读原型
-│     ├─ ChronicleImportWizard.vue # 隔离历史导入向导
+│     ├─ ChronicleApp.vue          # 受控启用的 /chronicle 管理入口
+│     ├─ ChronicleEditor.vue       # 条目字段、来源、确认与发布
+│     ├─ ChronicleImportWizard.vue # 历史导入向导
 │     ├─ chronicle.css             # Chronicle 独立样式
+│     ├─ ui/                       # 银灰玻璃变量、主题、地球与共享抽屉
 │     ├─ ArchivePanel.vue          # 聊天档案操作
 │     ├─ BackupPlanPanel.vue       # 备份计划与 H5 操作
 │     ├─ ChatGPTPlanPanel.vue      # 本机套餐连接
@@ -98,9 +102,9 @@ Owner 只参与无法代办的凭据输入／系统人工确认、主观体验�
 │     ├─ voice/ScribeDraftInput.vue   # 主动录音草稿
 │     ├─ voice/voiceApi.ts         # 语音 API 客户端
 │     ├─ App.vue.js               # vue-tsc 生成/辅助产物，不应手工编辑
-│     ├─ main.ts                  # 实际入口，挂载 App.vue 和 style.css
+│     ├─ main.ts                  # 实际入口，加载共享主题并按路径挂载 App/Chronicle
 │     ├─ main.js                  # 生成/备用 JS 入口，当前不是 index.html 的源入口
-│     └─ style.css                # 当前产品的主要手写 CSS
+│     └─ style.css                # 产品基础样式；共享外观见 ui/
 ├─ data/
 │  ├─ yosaki.sqlite3              # 本地运行数据库，敏感运行数据
 │  ├─ .secret_key                 # 本地 Fernet 密钥，敏感文件
@@ -150,7 +154,7 @@ Owner 只参与无法代办的凭据输入／系统人工确认、主观体验�
 - `tests/` 提供隔离后端验收测试，根级 `npm run test:backend` 可运行；`backend/__pycache__/` 下的旧字节码不是测试源码。
 - `node_modules/`、`.venv/`、`__pycache__/`、`frontend/dist/`、`frontend/tsconfig.tsbuildinfo` 是依赖或生成物，应保持忽略。
 - `data/yosaki.sqlite3`、`data/.secret_key`、`.env.production`、API Key、MCP 密钥、session 和备份密码都属于敏感材料；不要提交、复制到日志或写入前端存储。
-- 当前前端仍是大体量单文件组件；修改功能时优先定位并修改 `frontend/src/App.vue`，不要直接改 `App.vue.js`。
+- 前端业务状态仍集中于大体量 `frontend/src/App.vue`，Chronicle 在 `ChronicleApp.vue`／`ChronicleEditor.vue`，共享 UI 在 `frontend/src/ui/`；先定位所属源组件，不要直接改 `*.vue.js` 等生成产物。
 - `README.md` 同时包含按日期追加的实现记录；如果顶部概览与最新日期记录冲突，以当前代码和最新记录为准，并在后续维护中修正文档漂移。
 - `文档存档/`、根目录的 `.rar`、仓库外 H5-B 隔离副本及 `docs/H5B_REAL_SAMPLE_REPORT.md` 涉及用户历史样本或其交接记录；不要复制私人正文到测试夹具、日志、AGENTS.md 或公开提交。
 
@@ -161,7 +165,8 @@ Owner 只参与无法代办的凭据输入／系统人工确认、主观体验�
 - Vue 3 + Vite + TypeScript。
 - 图标：`lucide-vue-next`。
 - Markdown：`marked`；内容清理：`dompurify`。
-- CSS：`frontend/src/style.css` 手写样式；当前没有 Tailwind/shadcn 运行依赖，不要引入全局 reset 或替换现有主题而不做视觉验证。
+- 欢迎页与工作台的地球使用 `three`、`three-globe` 和本地资源；按需加载，正文阅读页不持续挂载地球。
+- CSS 与主题以 `frontend/src/ui/tokens.css`、`silver.css`、`theme.ts` 为共享来源，基础样式仍在 `frontend/src/style.css`。银灰玻璃的页面与浮窗规范见 `docs/UI_DESIGN_STANDARD.md`；正文 17px／1.75，手机不缩字。当前没有 Tailwind/shadcn 运行依赖。
 - 开发端口通常为 `5173`；`frontend/vite.config.ts` 将 `/api` 代理到 `http://127.0.0.1:8000`。
 - dev/preview 使用 `--host 0.0.0.0`，意味着可能具备局域网暴露能力，但不代表已经完成 HTTPS、CORS、防火墙和公网安全配置。
 
@@ -178,7 +183,7 @@ Owner 只参与无法代办的凭据输入／系统人工确认、主观体验�
   uv pip install --python .venv\Scripts\python.exe -r backend\requirements.txt
   .\scripts\start_yosaki_development.ps1
   ```
-- R2-C 已在 2026-11-10 完成日常库增量初始化、Development 端口交接和真实登录验收，见 `docs/R2C_EXECUTION_RESULT.md`；`docs/RUNTIME_MODES.md` 开头的“尚缺结构／等待 R2-C”是历史描述。继续使用 Development／Preview／Test 专用入口及导入前数据库路径、Schema 预检，不用裸 Uvicorn 绕开。当前日常 Voice 有独立受保护入口 `scripts/start_yosaki_voice_daily.ps1`；启动模式、前端配套入口和实际开关须按 `docs/VOICE_SYSTEM_PLAN.md` 第 0.66～0.68 节核对，不能假设普通 Development 已启用 Voice。
+- R2-C 已完成日常库增量初始化、Development 端口交接和真实登录验收，见 `docs/R2C_EXECUTION_RESULT.md`；`docs/RUNTIME_MODES.md` 开头的“等待 R2-C”是历史描述。继续使用专用 Runtime 的路径与 Schema 预检，不用裸 Uvicorn 绕开。日常 Voice 使用 `scripts/start_yosaki_voice_daily.ps1` 及配套前端入口；Chronicle 的 workspace/context 与付费开关也须在进程环境核对。启动脚本或文档中的历史 PID 不代表当前运行实例。
 - 前端启动：
   ```powershell
   Set-Location "D:\AI xiangmu\自建前端"
@@ -248,7 +253,7 @@ Owner 只参与无法代办的凭据输入／系统人工确认、主观体验�
   - `drive_states`、`volition_items`、`activity_plans`、`feedback_activities_v4`
   - `learning_evidence`、`learning_preferences`、`learning_memories`、`learning_strategies`、`learning_goal_notes`
   - `psychological_snapshots`、`psychological_events`、`second_order_desires`、`psychological_edges`
-- M1 的 `mv2_*` 索引/任务表由正式 `main.py` 的 `init_db()` 创建，M1 的索引维护和只读来源 API 也已安装；索引是可重建的派生数据，不是新事实权威。`memory_v2_import_schema`、P1-A/P1-A2 元数据、M3/P2 等隔离表和 API 不应因模块存在就假定在正式服务已安装。
+- M1 的 `mv2_*` 索引/任务表由 `main.py` 初始化，索引是可重建派生数据，不是新事实权威。Chronicle workspace/context 已按受控流程增量安装与加载；`YOSAKI_CHRONICLE_WORKSPACE`、`YOSAKI_CHRONICLE_CONTEXT`、`YOSAKI_CHRONICLE_PAID_ENABLED` 分别约束入口、聊天记忆与付费派发。A3 源码、表、页面和正式已审核字段是不同状态；读时继续检查来源、角色、人工审核和权限，阿夜记忆通道不得返回 RAW／CLEANED，展开到合资格完整精修正文。
 - Voice 的 Profile/告知、V2 音频缓存/绑定、Scribe 日额和连续通话表已按各自受控记录迁移到日常库；`YOSAKI_VOICE_ENABLED=0` 仍会关闭相关能力，不能从表存在或路由注册推断服务开关、供应商能力或费用。H3.4 标题确认模块与 API 未由正式 `main.py` 安装。
 - 角色删除必须清理关联的对话、消息、工具运行、记忆、摘要、提示词块和上下文设置；后端拒绝删除最后一个角色。
 - 角色复制只复制角色资料和提示词块，不复制聊天、记忆、摘要、工具运行或模型绑定。
@@ -266,7 +271,7 @@ Owner 只参与无法代办的凭据输入／系统人工确认、主观体验�
 | 对话 | `/api/conversations`、`/api/conversations/{id}`、`/messages`、`/export` | 对话列表、重命名、消息、删除和 JSON/Markdown 导出 |
 | 聊天 | `/api/chat/stream`、`/api/chat/regenerate` | 演示/供应商流式聊天和重新生成 |
 | 记忆/上下文 | `/api/memories*`、`/api/characters/{id}/context-settings`、`/api/conversations/{id}/summary`、`/api/chat/context-preview` | 记忆、摘要、历史限制和上下文预览 |
-| Memory V2 M1 | `/api/memory-v2/*` 的显式索引任务、搜索、时间片段和来源详情 | 正式注册的可重建索引与只读来源查询；与隔离 Chronicle/导入/元数据 API 区分 |
+| Memory V2／Chronicle | `/api/memory-v2/*`、`/api/memory-v2/workspace/*` | M1 可重建索引及受开关保护的用户管理、条目/时间树与记忆通道；付费任务另有关闭开关和逐次授权，详见执行计划 |
 | 欲望与学习 | `/api/desires/{id}*`、`/api/desires/{id}/learning*`、`/api/desires/{id}/psychology*` | 驱力、意愿、自由活动、反馈、长期学习和模拟心理状态 |
 | MCP | `/api/mcp/servers*`、`/api/mcp/servers/{id}/tools`、`/api/mcp/tools/{id}` | 服务保存、连接、刷新、工具目录和工具启停 |
 | 插件 | `/api/plugins*` | 清单校验、安装、启停、逐工具授权和卸载 |
@@ -353,7 +358,7 @@ Owner 只参与无法代办的凭据输入／系统人工确认、主观体验�
 - TTS 使用浏览器/操作系统的 `speechSynthesis`，不保存音频，也不经 YOSAKI 后端发送。
 - STT 优先尝试本机识别；本机不可用时必须先展示远程浏览器识别的隐私说明和同意操作。
 - `backend/app/voice/` 与 `frontend/src/voice/` 现覆盖档案与告知、V2 HTTP 消息朗读及缓存、V3 表达候选、Scribe 草稿、自动朗读和连续通话；`frontend/src/App.vue` 集成对应控件。日常库已按受控记录迁移 Voice V1/V2、Scribe 与连续通话所需表，普通 Development 和 Voice 专用入口的实际启用状态必须逐次核对。备份隔离副本剔除告知和运行态/音频缓存，不能把恢复后账户视为已重新同意第三方处理。
-- V2-A 中文消息 3、日语消息 10 的手动朗读和缓存复用有各自限定真实记录；V3 `thoughtful` 仅消息 10 单次产品试听反馈“符合预期”；V4 的单批两轮耳机实测完成，但日常连续通话随后因 ChatGPT Plan 开关遗漏出现用户消息已保存、助手未完成的故障。开关已修复并经零外呼隔离验证，尚无修复后的真人通话复验。当前 Scribe 当日额度已耗尽的记录只是 2026-11-16 当时状态，实际余额须从服务端重新读取；未完成回复不会自动补发。V1-B 整体、七段固定 Benchmark、费用、扬声器回声、移动端及长期稳定性仍未验收。依据 `docs/VOICE_SYSTEM_PLAN.md` 第 0 节及 `docs/VOICE_V2A_FINAL_ACCEPTANCE.md`，不要按文档第 6～13 节的旧阶段语句判断当前状态。
+- 日常通话默认 HTTP，可手选 TTD WS；用户主动选择的耳机插话默认关闭。生成中打断接续、HTTP 播放停音与耳机插话分别有单次限定真实记录。日语自动语气只开放克制且默认关闭；两位置表达的真实 HTTP 合成获得用户一次“很自然”的声学反馈，真实 AI 规划仍未执行，实验能力未进入日常。两份超过 2000 字的真实长文首段结果 unknown，第二段未派发；不得自动重试或把它写成完整朗读通过。账单、固定 Benchmark、扬声器、跨设备和长用稳定性继续按 `docs/VOICE_DELIVERY_INDEX.md`、`docs/VOICE_FOLLOWUP_ROADMAP.md` 记录，历史故障及当日额度见第 54 节。
 
 ### 部署
 
@@ -377,8 +382,8 @@ Owner 只参与无法代办的凭据输入／系统人工确认、主观体验�
 - 独立页面组件拆分；当前 `/chat` 等路径使用共享功能面板的全页模式，另保留 `/hub` + 浮动窗口。
 - 角色卡导入的真实浏览器文件选择流程尚未在 QA 中执行；API round-trip/rejection 已有本地测试记录。
 - `tests/` 和 `npm run test:backend` 覆盖隔离本地 API 与模拟服务，不能等同于真实第三方服务、设备或部署验收。
-- H5 V2 正式启用仍缺可验证的加密目标卷、容量和恢复演练；`YOSAKI_H5A_ENABLED=1` 只用于受控隔离测试。H5-B 单份私人文件已完成 H1/H2，H3.1 边界已确认；H3.2 在执行前快照的新隔离副本中完成 M1 v2 重建和 13 个 P1-A2 草稿，详见第 52 节。不能据此扩大到批量导入或正式库。
-- P1-A2 的角色撤权分页修复已有 320/320 隔离后端回归记录，但正式 `main.py` 未注册其元数据 API；不能把合成验证写成正式使用或用户可见浏览器验收。
+- H5 V2 大容量备份的正式启用门槛仍按 H5 专项核对，不能从 Chronicle 的受控增量接入推断整套 H5 已部署。H5-B 现已正式导入单份历史档案、130 条来源及 13 条管理草稿；13 份精修及13份梗概均可审，所有本批条目仍待 Owner 内容确认与发布。不得扩大为私人历史批量导入或已取得正式召回资格。
+- Chronicle 的元数据、时间树、检索与页面已有正式样本证据；缺失的真实质量、日常付费加工和 H5-B 本批人工审核按 C1～C10 逐项报告。第 40～55 节中“未注册正式服务”的旧阶段语句不能覆盖当前 Runtime 加载状态。
 - `README.md` 顶部与按日期追加的记录可能不同步；判断实现状态以当前源码、最新专项记录和相应隔离验收为准，发现漂移时一并修正。
 
 必须区分以下验证层级：
@@ -720,6 +725,8 @@ R2-C 准备更新（2026-11-10）：`YOSAKI_BACKGROUND_TASKS_ENABLED=0` 在任�
 
 ## 55. Memory V2 当前交接与暂停 — 2026-11-18
 
+> 历史快照：后续授权及当前H5-B资格、核价和交付状态见统一执行计划已更新的C1～C10总表；本节的11/13、全批未发布及暂停措辞不得作为当前状态沿用。
+
 ### 暂停与工作区边界
 
 - Owner已明确暂停。除本次指南更新及限定Git同步外，不继续开发、付费请求、私人补生成、数据写入或服务切换；恢复须由Owner主动指示。本轮未用额度不构成下一次外发或补跑授权。
@@ -759,6 +766,21 @@ R2-C 准备更新（2026-11-10）：`YOSAKI_BACKGROUND_TASKS_ENABLED=0` 在任�
 - 本地逐条来源核对不代替Owner质量决定；阅读时可修正措辞，内容确认与发布仍由Owner在原01～13同页入口操作。生成、确认、发布及上下文资格彼此独立；H5-B草稿不自动获得召回资格。
 - 回退优先停止新付费执行器并保留新版本读取校验、字段、审核、来源和账本。源码只在仍为本轮字节且无后续修改时逐文件处理；已有v4数据不能直接撤掉新校验让旧读取器接管，不整库恢复、不删除历史unknown或释放其预留。
 
+## 56. 当前项目再核对 — 2026-11-18
+
+- 本轮任务仅更新本指南。第 55 节记录的 Owner 暂停仍适用于 Memory V2 开发、私人补生成、付费请求和日常服务切换；此次文档复核不构成恢复这些操作的指令。当前工作树仍有大量既存未提交和未跟踪的 Memory、Voice、UI、测试及文档，修改前后均按目标文件核对，不整理、覆盖或批量暂存。
+- Memory V2 每轮完整读取 `docs/MEMORY_V2_EXECUTION_PLAN.md`，其 C1～C10 为唯一交付结果表。`main.py` 现按 `YOSAKI_CHRONICLE_WORKSPACE` 安装 workspace，聊天构造受 `YOSAKI_CHRONICLE_CONTEXT` 约束；付费 Provider 还受单独开关和任务预算保护。H5-B 正式130条有序来源、13条经历及13份完整精修／13份梗概（05／07已补齐，历史incomplete保留）；截至2026-11-19的后续记录，09已确认关联精修、确认标题／梗概并发布；其余12条仍未发布，不再将全批描述为均未确认发布。NARRATIVE 完整精修、单经历 Synopsis、Temporal DIGEST 分字段与资格管理；阿夜记忆通道不得返回 RAW／CLEANED，旧记忆最终展开到合资格精修正文。unknown、旧预留、来源撤权与人工审核不得因替代任务或文档更新被清除。
+- UI 的银灰玻璃共用主题已写入工作区：`frontend/src/main.ts` 加载 `ui/tokens.css`、`silver.css`，`frontend/src/ui/` 包含主题、玻璃表面、地球和聊天抽屉；`ChronicleApp.vue` 与 `ChronicleEditor.vue` 承担已受控接入的管理页。UI 改动先读 `docs/UI_DESIGN_STANDARD.md`，保留正文 17px／1.75、手机字号、全部功能入口及录音、未保存、确认、错误状态。`design-qa.md` 记录了桌面/手机/平板与全能力聊天布局实测，也明确角色草稿“取消放弃”分支、语音告知焦点循环、真实设备和跨浏览器等未覆盖项；构建与截图不能代替这些验收。
+- Voice 的当前入口改为 `docs/VOICE_DELIVERY_INDEX.md`，并参照 `docs/VOICE_FOLLOWUP_ROADMAP.md`。基础朗读、录音草稿、自动朗读和连续通话已有日常能力；HTTP 默认、TTD WS 可手选，耳机插话须单次主动勾选。对话 18 的生成中接续、对话 20 的 HTTP 停音及独立耳机插话各有范围有限的真实证据。新的段/句多位置表达规划只在隔离实验中实现；56 字两位置音频获一次用户听评认可，真实 AI 规划仍是待批准候选、日常未启用，超过 2000 字的两次长文首段 unknown 且第二段未发。不能沿用第 54 节的旧额度快照或把 Voice 第 2 步样本听评写成判断质量通过。
+- 本次没有导入 `backend.app.main`、触碰 `data/`、重启服务、发起 Provider 请求或执行付费／私人数据测试。历史测试和外部冻结副本的计数只对原清单负责；当前实例、开关、余额与文件字节下一次操作时均须重新核对。
+
+
+### 2026-11-18 Memory 审核关联与常驻保留当前补记
+
+- 以统一执行计划末尾同日“审核关联、发布版本及常驻保留修正”及源码为准：确认精修核对当前M3并原子关联／审核P1 narrative；旧窗口拒绝覆盖，重复确认幂等；新Chronicle发布要求当前可见精修与梗概已确认。没有代Owner确认或发布H5-B。
+- Owner批准显式常驻／固定跨时间档保留当前完整已确认单经历梗概，共用1024估算token／5块，全文按需展开；重要／奠基不自动常驻，不新增重要约定抽取权威。超预算不截断正文，取消下一次请求生效。
+- 本轮6文件限定加载、外部相关组合87/87及前端构建通过；正式13份梗概＋13份精修只读重核。0Provider／embedding／凭据读取，无迁移，旧32份请求与预算及130条RAW不变。日常付费关闭，Voice／UI并行成果保留。旧55节等11/13为历史时点，不得据其重跑已补齐任务。
+- H5-B全批向量尚未建立；现有打包入口8192 UTF-8字节保守界，13条标题＋梗概16540字节，后续须先做明确分组／增量建索引再批准外发，不能把银叶馆证据当作本批已有向量。
 
 ## Chat Enhancement 当前交接 — 2026-11-19
 

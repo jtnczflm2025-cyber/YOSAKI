@@ -100,5 +100,5 @@ onUnmounted(()=>{if(poller)clearInterval(poller)})
 </template>
 
 <style scoped>
-.feedback-panel{display:grid;gap:10px}.feedback-panel h3,.feedback-panel p{margin:0}.feedback-panel label{display:grid;gap:5px;max-width:520px}.feedback-panel select,.feedback-panel input{width:100%;box-sizing:border-box}.feedback-card{display:grid;gap:6px;padding:11px;border:1px solid rgba(150,145,186,.22);border-radius:10px}.feedback-row{display:flex;flex-wrap:wrap;gap:8px;padding:7px 0;border-top:1px solid rgba(150,145,186,.16);overflow-wrap:anywhere}.feedback-row small{opacity:.75}.feedback-actions{display:flex;flex-wrap:wrap;gap:8px}
+.feedback-panel{display:grid;gap:10px}.feedback-panel h3,.feedback-panel p{margin:0}.feedback-panel label{display:grid;gap:5px;max-width:520px}.feedback-panel select,.feedback-panel input{width:100%;box-sizing:border-box}.feedback-card{display:grid;gap:6px;padding:11px;border:1px solid var(--ui-line-soft);border-radius:10px}.feedback-row{display:flex;flex-wrap:wrap;gap:8px;padding:7px 0;border-top:1px solid var(--ui-line-soft);overflow-wrap:anywhere}.feedback-row small{opacity:1}.feedback-actions{display:flex;flex-wrap:wrap;gap:8px}
 </style>

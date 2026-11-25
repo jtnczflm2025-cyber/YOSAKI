@@ -131,14 +131,14 @@ watch(() => [props.characterId, props.refreshKey], (next, previous) => {
 
 <style scoped>
 .volition-panel{display:grid;gap:14px;min-width:0}
-.desire-section{padding:17px;border:1px solid rgba(150,145,186,.22);border-radius:14px;background:rgba(255,255,255,.025);display:grid;gap:10px;min-width:0}
+.desire-section{padding:17px;border:1px solid var(--ui-line-soft);border-radius:14px;background:var(--ui-raised);display:grid;gap:10px;min-width:0}
 .desire-section h3,.volition-group h4{margin:0}.desire-section p{margin:0;line-height:1.5}
-.desire-controls{display:flex;flex-wrap:wrap;gap:12px}.desire-controls label{display:grid;gap:5px;min-width:min(140px,100%);flex:1;color:#aaa5b4;font-size:11px}
-.desire-controls select,.volition-environment textarea{box-sizing:border-box;width:100%;color:#e1dce9;background:#211f29;border:1px solid #403b4b;border-radius:7px;padding:8px;font:inherit}
+.desire-controls{display:flex;flex-wrap:wrap;gap:12px}.desire-controls label{display:grid;gap:5px;min-width:min(140px,100%);flex:1;color:var(--ui-muted);font-size:13px}
+.desire-controls select,.volition-environment textarea{box-sizing:border-box;width:100%;color:var(--ui-ink);background:var(--ui-surface);border:1px solid var(--ui-line-soft);border-radius:7px;padding:8px;font:inherit}
 .desire-controls select{appearance:auto;color-scheme:dark}
-.desire-actions{display:flex;flex-wrap:wrap;gap:8px}.desire-log{display:grid;gap:5px;min-width:0;padding:8px 0;border-top:1px solid rgba(150,145,186,.16)}
-.desire-log p{font-size:12px;overflow-wrap:anywhere}.desire-log span,.desire-log small{font-size:10px;color:#9d96ae;overflow-wrap:anywhere}
-.desire-notice{min-height:1.2em;color:#a99ded}.volition-check{display:flex!important;align-items:center;gap:7px!important}.volition-check input{width:auto!important}
-.volition-environment{display:grid;gap:7px;margin:0;color:#aaa5b4;font-size:11px}.volition-tendencies{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:7px}
-.volition-group{display:grid;gap:7px;margin-top:6px}.volition-group h4{font-size:11px;color:#c7bbf4}
+.desire-actions{display:flex;flex-wrap:wrap;gap:8px}.desire-log{display:grid;gap:5px;min-width:0;padding:8px 0;border-top:1px solid var(--ui-line-soft)}
+.desire-log p{font-size:13px;overflow-wrap:anywhere}.desire-log span,.desire-log small{font-size:13px;color:var(--ui-accent);overflow-wrap:anywhere}
+.desire-notice{min-height:1.2em;color:var(--ui-accent)}.volition-check{display:flex!important;align-items:center;gap:7px!important}.volition-check input{width:auto!important}
+.volition-environment{display:grid;gap:7px;margin:0;color:var(--ui-muted);font-size:13px}.volition-tendencies{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:7px}
+.volition-group{display:grid;gap:7px;margin-top:6px}.volition-group h4{font-size:13px;color:var(--ui-ink)}
 </style>

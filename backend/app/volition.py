@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .psychology import Reflection
+from . import memory_authority
 
 router = APIRouter(prefix="/api/desires")
 STAGES = ("candidate", "pending", "committed")
@@ -311,10 +312,12 @@ def install(app, connect, now, model_text, snapshot, drive_ids):
             report = advisory(db, character_id)
             character = dict(db.execute("SELECT name,system_prompt FROM characters WHERE id=?", (character_id,)).fetchone())
             character["system_prompt"] = character["system_prompt"][:3000]
-            memories = [r[0][:1000] for r in db.execute("SELECT content FROM memories WHERE character_id=? AND scope='long' AND enabled=1 ORDER BY id DESC LIMIT 5", (character_id,))] if payload.includeMemoryContext else []
+            memory_rows = memory_authority.recent_long_rows(db, character_id) if payload.includeMemoryContext else []
+            memories = [r["content"][:1000] for r in memory_rows]
         messages = [{"role": "system", "content": "根据当前角色设定，输出一份简短的第一人称模拟自我观察。不要声称真实主观体验，不作诊断，不提出行动命令，不调用工具；允许空描述。仅输出 JSON：schemaVersion=2,selfDescription,observedDriveIds,metaDesires(含 targetDriveId,stance,explanation),unresolvedQuestions,reflections(可选数组，每项含 targetType,targetId,attitude,strength,confidence,reasonSummary,relatedGoalIds)。二阶倾向可互相矛盾，不要因为一次失败就生成强烈抵触。"},
                     {"role": "user", "content": json.dumps({"character": character, "mode": payload.mode, "advisory": report, "target": target, "memories": memories}, ensure_ascii=False)}]
-        raw = await model_text(profile, messages, response_schema=ObservationResult)
+        raw = await app.state.behavior_model_call(character_id, None, f"observation:{payload.requestId}",
+            "observation", profile["max_tokens"], lambda: model_text(profile, messages, response_schema=ObservationResult))
         try:
             result = ObservationResult.model_validate_json(raw)
             from .psychology import Reflection
@@ -327,6 +330,7 @@ def install(app, connect, now, model_text, snapshot, drive_ids):
             if any(len(x) > 300 for x in result.unresolvedQuestions):
                 raise ValueError("question too long")
         except (ValidationError, ValueError, HTTPException) as exc:
+            app.state.behavior_mark_invalid(character_id, f"observation:{payload.requestId}", "observation")
             raise HTTPException(502, f"自我观察格式无效，状态未更新：{str(exc)[:200]}") from exc
         with connect() as db:
             require(db, character_id)
@@ -390,20 +394,22 @@ def install(app, connect, now, model_text, snapshot, drive_ids):
             report = advisory(db, character_id)
             character = dict(db.execute("SELECT name,system_prompt FROM characters WHERE id=?", (character_id,)).fetchone())
             character["system_prompt"] = character["system_prompt"][:3000]
-            memories = [r[0][:1000] for r in db.execute("SELECT content FROM memories WHERE character_id=? AND scope='long' AND enabled=1 ORDER BY id DESC LIMIT 5", (character_id,))] if payload.includeMemoryContext else []
+            memory_rows = memory_authority.recent_long_rows(db, character_id) if payload.includeMemoryContext else []
+            memories = [r["content"][:1000] for r in memory_rows]
             versions = {x["id"]: x["version"] for x in items}
             model_items = [{"id": x["id"], "title": x["title"], "stage": x["stage"], "source": x["source"],
                             "relatedDriveIds": x["relatedDriveIds"], "reasonSummary": x["reason_summary"][:300],
                             "selfNote": x["self_note"][:300]} for x in items]
             interest_evidence = [dict(x) for x in db.execute("SELECT description,expectation_gap FROM interest_evidence_v4 WHERE character_id=? AND status='candidate' ORDER BY created_at DESC LIMIT 5", (character_id,))]
-            learning_context = app.state.learning_context(db, character_id, (next((x["title"] for x in items if x["id"] == payload.targetItemId), "") or payload.environmentSummary))
+            learning_context = app.state.learning_context(db, character_id, (next((x["title"] for x in items if x["id"] == payload.targetItemId), "") or payload.environmentSummary), {r["id"] for r in memory_rows})
             psychological_context = app.state.psychology_context(db, character_id, payload.environmentSummary)
         messages = [{"role": "system", "content": "你为当前角色形成公开意愿记录。欲望与模拟心理状态仅供参考，不按最高数值决定。可创建候选兴趣、明确推迟为未决意愿、明确承诺长期目标，也可选择、维持、修改、拒绝、不行动或暂不决定。未决项不产生自动期限或负罪感。二阶倾向不自动高于一阶欲望，允许矛盾保留。不要假装执行活动，不调用工具。仅输出 JSON：schemaVersion=2,type(create_goal|choose_goal|maintain_goal|defer_goal|reject_goal|revise_goal|no_action|undecided),targetItemId(已有目标时),proposedItem(新建或修改时，含 title,description,source,relatedDriveIds,stage),reasonSummary,selfNote,reflections(可选数组；字段 targetType,targetId,attitude,strength,confidence,reasonSummary,relatedGoalIds)。"},
                     {"role": "user", "content": json.dumps({"character": character, "advisory": report, "observation": observation,
                         "intentions": model_items, "interestEvidence": interest_evidence, "targetItemId": payload.targetItemId, "memories": memories,
                         "environmentSummary": payload.environmentSummary, "longTermLearning": learning_context,
                         "psychologicalReference": psychological_context}, ensure_ascii=False)}]
-        raw = await model_text(profile, messages, response_schema=DecisionResult)
+        raw = await app.state.behavior_model_call(character_id, None, f"volition:{payload.requestId}",
+            "volition_decision", profile["max_tokens"], lambda: model_text(profile, messages, response_schema=DecisionResult))
         try:
             result = DecisionResult.model_validate_json(raw)
             from .psychology import Reflection
@@ -418,6 +424,7 @@ def install(app, connect, now, model_text, snapshot, drive_ids):
             if result.type in {"no_action", "undecided"} and (result.targetItemId or result.proposedItem):
                 raise ValueError("unexpected item")
         except (ValidationError, ValueError, HTTPException) as exc:
+            app.state.behavior_mark_invalid(character_id, f"volition:{payload.requestId}", "volition_decision")
             raise HTTPException(502, f"意愿输出格式无效，状态未更新：{str(exc)[:200]}") from exc
         with connect() as db:
             require(db, character_id)

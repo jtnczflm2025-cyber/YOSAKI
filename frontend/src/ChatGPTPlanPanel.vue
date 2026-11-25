@@ -22,9 +22,15 @@ async function refresh(){
     status.value=await request<Status>('/api/chatgpt/status')
     if(status.value.connected && status.value.plan_allowed){
       authorizationUrl.value=''
-      models.value=await request<CatalogModel[]>('/api/chatgpt/models')
     }else models.value=[]
   }catch(error){feedback.value=error instanceof Error?error.message:'账户状态读取失败'}
+}
+async function loadCatalog(){
+  if(!status.value?.connected || !status.value.plan_allowed)return
+  busy.value=true;feedback.value=''
+  try{models.value=await request<CatalogModel[]>('/api/chatgpt/models')}
+  catch(error){feedback.value=error instanceof Error?error.message:'模型目录读取失败'}
+  finally{busy.value=false}
 }
 async function begin(){
   busy.value=true;feedback.value=''
@@ -69,6 +75,7 @@ onUnmounted(()=>{if(poller)clearInterval(poller)})
       <button v-if="!status.connected || !status.plan_allowed" :disabled="busy||status.pending" @click="begin">Continue with ChatGPT</button>
       <button v-if="status.connected" :disabled="busy" @click="disconnect">断开并撤销授权</button>
       <button @click="refresh">刷新状态</button>
+      <button v-if="status.connected && status.plan_allowed" :disabled="busy" @click="loadCatalog">读取可用模型（请求账户服务）</button>
       <p v-if="authorizationUrl"><a :href="authorizationUrl" target="_blank" rel="noopener noreferrer">打开 ChatGPT 授权页面</a></p>
       <p v-if="status.error">{{status.error}}</p>
       <div v-if="status.plan_allowed && models.length" class="plan-model-list"><strong>此账户可选模型</strong><div v-for="item in models" :key="item.slug"><span>{{item.display_name}}</span><button :disabled="busy" @click="addModel(item)">加入模型列表</button></div></div>
@@ -78,11 +85,11 @@ onUnmounted(()=>{if(poller)clearInterval(poller)})
 </template>
 
 <style scoped>
-.chatgpt-plan{padding:12px;border:1px solid #716f83;border-radius:12px;margin:8px 0;color:#f2eefb}
+.chatgpt-plan{padding:12px;border:1px solid var(--ui-line-soft);border-radius:12px;margin:8px 0;color:var(--ui-ink)}
 .chatgpt-plan summary{cursor:pointer;font-weight:600}
-.chatgpt-plan p{line-height:1.5;color:#d7d1e5}
-.chatgpt-plan button{background:#373047;color:#f2ecff;border:1px solid #645a80;border-radius:7px;padding:7px 10px;margin:4px 8px 4px 0}
-.chatgpt-plan button:disabled{opacity:.5;cursor:not-allowed}
-.chatgpt-plan a{color:#bfb0ff}
+.chatgpt-plan p{line-height:1.5;color:var(--ui-ink)}
+.chatgpt-plan button{background:var(--ui-raised);color:var(--ui-ink);border:1px solid var(--ui-line-soft);border-radius:7px;padding:7px 10px;margin:4px 8px 4px 0}
+.chatgpt-plan button:disabled{opacity:1;cursor:not-allowed}
+.chatgpt-plan a{color:var(--ui-accent)}
 .plan-model-list>div{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0}
 </style>

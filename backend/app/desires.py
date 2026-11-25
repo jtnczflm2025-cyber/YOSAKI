@@ -336,6 +336,8 @@ def install(app, connect, now, model_url, auth_headers, mcp_request, validate_to
     learning.install(app, connect, now, model_text)
     from . import psychology
     psychology.install(app, connect, now, model_text, DRIVE_IDS)
+    from . import behavior
+    behavior.install(app, connect, now)
 
     @router.get("/{character_id}")
     def get_state(character_id: int):
@@ -764,6 +766,8 @@ def init_db(db):
     learning.init_db(db)
     from . import psychology
     psychology.init_db(db)
+    from . import behavior
+    behavior.init_db(db)
 
 
 def chat_advisory(db, character_id: int, message: str) -> str:

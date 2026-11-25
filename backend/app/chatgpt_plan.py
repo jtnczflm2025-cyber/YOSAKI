@@ -188,7 +188,7 @@ async def _callback(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) 
         await writer.wait_closed()
 
 
-async def access_token() -> str:
+async def access_token(*, allow_refresh: bool = True) -> str:
     _require_enabled()
     async with refresh_lock:
         record = _read()
@@ -197,6 +197,8 @@ async def access_token() -> str:
             raise HTTPException(401, "请先连接已授权 ChatGPT 套餐的账户")
         if account.get("expires_at", 0) > time.time() + 60:
             return account["access_token"]
+        if not allow_refresh:
+            raise HTTPException(401, "本次验收需要有效的本地 ChatGPT 授权")
         async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
             response = await client.post(f"{AUTH_BASE}/api/accounts/oauth/token", data={
                 "grant_type": "refresh_token", "client_id": account["client_id"],

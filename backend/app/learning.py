@@ -12,6 +12,8 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from . import memory_authority
+
 router = APIRouter(prefix="/api/desires")
 RULE_VERSION = "learning-v1"
 
@@ -355,18 +357,19 @@ def install(app, connect, now, model_text):
         db.execute("INSERT INTO learning_controls VALUES(?,?,?,?,?)", (character_id, request_id, target_id, action, json.dumps(response, ensure_ascii=False)))
         return response
 
-    def learning_context(db, character_id, topic=""):
+    def learning_context(db, character_id, topic="", excluded_memory_ids=()):
         collect(db, character_id)
         needle = key(topic)
         prefs = [view(x) for x in db.execute("SELECT * FROM learning_preferences WHERE character_id=? AND confidence>0 ORDER BY updated_at DESC LIMIT 40", (character_id,))]
         strategies = [view(x) for x in db.execute("SELECT * FROM learning_strategies WHERE character_id=? AND status='available' ORDER BY updated_at DESC LIMIT 30", (character_id,))]
-        memories = [view(x) for x in db.execute("SELECT * FROM learning_memories WHERE character_id=? AND status='accepted' ORDER BY updated_at DESC LIMIT 30", (character_id,))]
+        memories = [view(item) for projection, item in memory_authority.approved_learning_rows(db, character_id)
+                    if projection["id"] not in excluded_memory_ids][:30]
         notes = [view(x) for x in db.execute("SELECT * FROM learning_goal_notes WHERE character_id=? AND status='accepted' ORDER BY updated_at DESC LIMIT 20", (character_id,))]
         matches = lambda label: bool(not needle or (label in needle or needle in label))
-        return {"preferences": [{"subject": x["subject"], "context": x["context_key"], "estimate": x["estimate"], "confidence": x["confidence"], "status": x["status"]} for x in prefs if matches(x["subject"])][:3],
+        return {"preferences": [{"sourceId": x["id"], "subject": x["subject"], "context": x["context_key"], "estimate": x["estimate"], "confidence": x["confidence"], "status": x["status"]} for x in prefs if matches(x["subject"])][:3],
                 "strategies": [{"id": x["id"], "name": x["name"], "condition": x["condition_text"], "confidence": x["confidence"]} for x in strategies if matches(key(x["condition_text"]))][:3],
-                "memories": [{"content": x["content"][:300], "fact": x["fact"][:200], "interpretation": x["interpretation"][:200]} for x in memories if matches(x["subject"])][:3],
-                "goalNotes": [{"goalId": x["goal_id"], "summary": x["summary"][:300], "resumeHint": x["resume_hint"][:200]} for x in notes if matches(key(x["summary"]))][:3]}
+                "memories": [{"sourceId": x["id"], "content": x["content"][:300], "fact": x["fact"][:200], "interpretation": x["interpretation"][:200]} for x in memories if matches(x["subject"])][:3],
+                "goalNotes": [{"sourceId": x["id"], "goalId": x["goal_id"], "summary": x["summary"][:300], "resumeHint": x["resume_hint"][:200]} for x in notes if matches(key(x["summary"]))][:3]}
 
     app.state.learning_context = learning_context
     app.state.learning_collect = collect

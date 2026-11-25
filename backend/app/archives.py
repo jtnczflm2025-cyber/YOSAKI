@@ -1,3 +1,4 @@
+from . import chat_history
 """Versioned, bounded conversation archives. Imported tool metadata is inert."""
 import hashlib
 import io
@@ -159,6 +160,19 @@ def load_file(name,data):
 
 
 def install(app,connect,now):
+    def require_live(db, conversation_id):
+        if any(column[1] == "archive_only" for column in db.execute("PRAGMA table_info(conversations)")):
+            if db.execute("SELECT 1 FROM conversations WHERE id=? AND archive_only=1", (conversation_id,)).fetchone():
+                raise HTTPException(404, "对话不存在")
+
+    def chronicle_duplicate(db, digest, character_id=None):
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mv2_import_files'").fetchone():
+            return False
+        if character_id is None:
+            return bool(db.execute("SELECT 1 FROM mv2_import_files WHERE file_sha256=? LIMIT 1", (digest,)).fetchone())
+        return bool(db.execute("SELECT 1 FROM mv2_import_files WHERE file_sha256=? AND character_id=? LIMIT 1",
+                               (digest, character_id)).fetchone())
+
     def enriched(db,rows):
         result=[]
         for row in rows:
@@ -177,9 +191,10 @@ def install(app,connect,now):
         check_options(options)
         with connect() as db:
             cid=options.conversation_ids[0]
+            require_live(db, cid)
             conv=db.execute("SELECT c.*,ch.name AS character_name FROM conversations c JOIN characters ch ON ch.id=c.character_id WHERE c.id=?",(cid,)).fetchone()
             if not conv: raise HTTPException(404,"所选对话不存在")
-            rows=db.execute("SELECT * FROM messages WHERE conversation_id=? ORDER BY id",(cid,)).fetchall()
+            rows=chat_history.rows(db,cid)
             chosen=enriched(db,filtered(rows,options))
         original=render(conv["title"],conv["character_name"],chosen,ExportOptions(conversation_ids=[cid],format="markdown",include_tools=True,include_reasoning=True,include_monologue=True)).decode()
         selected=render(conv["title"],conv["character_name"],chosen,options).decode()
@@ -192,9 +207,10 @@ def install(app,connect,now):
         archive=io.BytesIO()
         with connect() as db, zipfile.ZipFile(archive,"w",zipfile.ZIP_DEFLATED) as z:
             for cid in options.conversation_ids:
+                require_live(db, cid)
                 conv=db.execute("SELECT c.*,ch.name AS character_name FROM conversations c JOIN characters ch ON ch.id=c.character_id WHERE c.id=?",(cid,)).fetchone()
                 if not conv: raise HTTPException(404,"所选对话不存在")
-                rows=db.execute("SELECT * FROM messages WHERE conversation_id=? ORDER BY id",(cid,)).fetchall()
+                rows=chat_history.rows(db,cid)
                 body=render(conv["title"],conv["character_name"],enriched(db,filtered(rows,options)),options)
                 z.writestr(f"conversation-{cid}."+{"json":"json","markdown":"md","txt":"txt"}[options.format],body)
         return Response(archive.getvalue(),media_type="application/zip",headers={"Content-Disposition":"attachment; filename=yosaki-chats.zip","Cache-Control":"no-store"})
@@ -213,7 +229,7 @@ def install(app,connect,now):
                 digest=hashlib.sha256(data).hexdigest()
                 try:
                     title,rows=load_file(file.filename or "",data)
-                    duplicate=bool(db.execute("SELECT 1 FROM imported_archives WHERE digest=?",(digest,)).fetchone())
+                    duplicate=bool(db.execute("SELECT 1 FROM imported_archives WHERE digest=?",(digest,)).fetchone()) or chronicle_duplicate(db,digest)
                     results.append({"name":file.filename,"title":title,"messages":len(rows),"digest":digest,"duplicate":duplicate})
                 except HTTPException as exc: results.append({"name":file.filename,"error":exc.detail})
                 except (TypeError,ValueError,IndexError): results.append({"name":file.filename,"error":"文件内容不符合聊天档案格式"})
@@ -234,7 +250,7 @@ def install(app,connect,now):
                 digest=hashlib.sha256(data).hexdigest()
                 with connect() as db:
                     if not db.execute("SELECT 1 FROM characters WHERE id=?",(character_id,)).fetchone(): raise HTTPException(404,"目标角色不存在")
-                    if db.execute("SELECT 1 FROM imported_archives WHERE digest=?",(digest,)).fetchone():
+                    if db.execute("SELECT 1 FROM imported_archives WHERE digest=?",(digest,)).fetchone() or chronicle_duplicate(db,digest,character_id):
                         results.append({"name":file.filename,"status":"skipped"}); continue
                     stamp=now()
                     cid=db.execute("INSERT INTO conversations(character_id,title,created_at,updated_at) VALUES(?,?,?,?)",(character_id,title,stamp,stamp)).lastrowid

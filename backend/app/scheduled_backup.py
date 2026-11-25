@@ -4,6 +4,7 @@ import base64
 import os
 import re
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,7 +30,12 @@ class BackupPlan(BaseModel):
     github_repo:str=""
 
 
-def install(app,connect,now,build_encrypted_backup,validate_backup,data_dir):
+def install(app,connect,now,build_encrypted_backup,validate_backup,data_dir,database):
+    from . import backup_v2, backup_v2_environment, backup_v2_limits
+
+    def v2_enabled():
+        return os.environ.get("YOSAKI_H5A_ENABLED") == "1"
+
     def current(db):
         row=db.execute("SELECT * FROM backup_plan WHERE id=1").fetchone()
         return dict(row) if row else BackupPlan().model_dump()
@@ -53,6 +59,8 @@ def install(app,connect,now,build_encrypted_backup,validate_backup,data_dir):
         checked_path(plan.local_dir)
         if plan.github_repo and not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",plan.github_repo): raise HTTPException(422,"仓库须为 owner/repo")
         if plan.enabled and not (plan.local_dir or plan.github_repo): raise HTTPException(422,"请先配置备份目标")
+        if plan.enabled and v2_enabled() and not plan.local_dir:
+            raise HTTPException(422,"H5-A 大容量备份必须配置本地目录；GitHub Contents API 不能单独承担大容量备份")
 
     async def github_request(method,url,token,accept="application/vnd.github+json",**kwargs):
         async with httpx.AsyncClient(timeout=30,follow_redirects=False) as client:
@@ -83,7 +91,9 @@ def install(app,connect,now,build_encrypted_backup,validate_backup,data_dir):
             if not (plan["local_dir"] or plan["github_repo"]): raise HTTPException(422,"请先配置备份目标")
             phrase=os.environ.get("YOSAKI_BACKUP_PASSWORD","")
             if len(phrase)<12: raise HTTPException(422,"请通过 YOSAKI_BACKUP_PASSWORD 提供至少 12 位备份密码")
-            blob=build_encrypted_backup(phrase)
+            if v2_enabled() and not plan["local_dir"]:
+                raise HTTPException(422,"H5-A 大容量备份必须配置本地目录")
+            blob=None if v2_enabled() else build_encrypted_backup(phrase)
             stamp=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
             name=f"yosaki-{stamp}-{uuid.uuid4().hex[:8]}.ybackup"
             result={"local":"disabled","github":"disabled"}
@@ -92,9 +102,22 @@ def install(app,connect,now,build_encrypted_backup,validate_backup,data_dir):
                 try:
                     local.mkdir(parents=True,exist_ok=True)
                     path=local/name
-                    with path.open("xb") as file: file.write(blob)
+                    if v2_enabled():
+                        work_root=backup_v2_environment.validate_work_root(data_dir / ".backup-work")
+                        backup_v2_limits.require_single_worker()
+                        backup_v2_limits.require_process_lease(work_root)
+                        backup_v2_limits.preflight_create(database,path,work_root)
+                        with backup_v2_limits.heavy_operation():
+                            deadline=time.monotonic()+1800
+                            def check_deadline():
+                                if time.monotonic()>=deadline:
+                                    raise backup_v2.BackupError("backup_timed_out")
+                            backup_v2.create_backup(database,path,phrase,work_root,check_deadline,
+                                                    backup_v2_limits.OPERATIONAL_DATABASE_MAX)
+                    else:
+                        with path.open("xb") as file: file.write(blob)
                     result["local"]="success"
-                except OSError:
+                except (OSError,backup_v2.BackupError):
                     result["local"]="failed"
                 else:
                     try:
@@ -104,9 +127,15 @@ def install(app,connect,now,build_encrypted_backup,validate_backup,data_dir):
                         result["local"]="retention_failed"
             if plan["github_repo"]:
                 token=os.environ.get("YOSAKI_BACKUP_GITHUB_TOKEN","")
-                if not token: result["github"]="missing_token"
+                if v2_enabled() and result["local"] not in ("success","retention_failed"):
+                    result["github"]="local_failed"
+                elif v2_enabled() and path.stat().st_size > 64*1024*1024:
+                    result["github"]="unsupported_large_backup"
+                elif not token: result["github"]="missing_token"
                 else:
                     try:
+                        if v2_enabled():
+                            blob=path.read_bytes()  # Small GitHub Contents API compatibility only.
                         await verify_repo(plan["github_repo"],token)
                         repo=plan["github_repo"]
                         url=f"{GITHUB_API_BASE}/repos/{repo}/contents/backups/{name}"
@@ -178,7 +207,11 @@ def install(app,connect,now,build_encrypted_backup,validate_backup,data_dir):
             await asyncio.sleep(30)
 
     @app.on_event("startup")
-    async def start(): app.state.backup_task=asyncio.create_task(scheduler())
+    async def start():
+        from .background_tasks import enabled
+        if not enabled():
+            return
+        app.state.backup_task=asyncio.create_task(scheduler())
     @app.on_event("shutdown")
     async def shutdown():
         stop.set()

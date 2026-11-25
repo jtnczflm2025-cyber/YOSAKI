@@ -312,3 +312,12 @@ The frontend now starts on `/` with a welcome screen and enters `/hub` on button
 - Floating-window headers now offer “作为独立页面打开”; page mode has a clear “返回工作台” control and browser back/forward restores the prior route and window mode.
 - Window focus/open/close stays URL-synchronized. `YOSAKI.last-route` and `YOSAKI.last-open-windows` persist with the existing layout key; restored layouts are validated, de-duplicated and clamped to the viewport, and CSS-resized dimensions are captured on pointer release.
 - Verified with `npm run build`, backend `py_compile`, `/health`, direct-route browser checks, mode switching and browser-history restoration. Viewport QA additionally covered 390×844 responsive chat and character pages with no horizontal overflow; physical-device and assistive-technology QA remain outstanding.
+
+
+## Memory V2 / Chronicle 限定收口（2026-11-25）
+
+日常Chronicle入口为本机 `/chronicle`，聊天入口为 `/chat`。完整精修、单经历梗概和周期摘要分开；只有确认发布且资格有效的内容进入记忆通道，RAW/CLEANED不返回给角色。单条补查默认12秒、可主动选30秒；不是未来费用或材料授权。
+
+当前结果和简明操作见 [Memory统一执行计划](docs/MEMORY_V2_EXECUTION_PLAN.md)。12/30已加载、离线及实际界面通过；09单次30秒注入通过但首轮只有工具提议，独立明确指令下搜索/确认/展开/确认/续答通过。不能推定自然问法全链、稳定性或Owner内容质量通过。其他12条仍待Owner审核，持续自主付费未授权。核价有效至香港2026-11-26 08:00，不自动续日。
+
+此分支基于既有聊天交付分支，仅把当前Memory与共享入口所需的导入/构建依赖成套交付。Voice依赖源用于保持共享入口可导入，不构成新语音实测或安装承诺。私人正文、数据库、API Key、音频、Cookie、隔离副本和付费验收原始包均不在提交范围。本机完整历史仍留存；Git中的计划为脱敏交接版。首次安装/真实库迁移仍须遵守Runtime预检和单独授权，源码提交不会自动迁移或启用付费。

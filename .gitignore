@@ -16,3 +16,6 @@ data/*
 # Production secrets
 .env.production
 *.ybackup
+/frontend/dist-segmented-lab/
+frontend/.vite-cache/
+.packages/
