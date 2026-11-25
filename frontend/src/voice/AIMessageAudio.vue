@@ -20,8 +20,14 @@ const availableFragments=computed(()=>result.value?.fragments.filter(f=>!draft.v
  return old && old.start<f.end && f.start<old.end
 })) || [])
 const rows=computed(()=>result.value?.fragments.filter(f=>f.kind==='sentence').map(f=>{
- const mark=savedAnnotations.value.find(a=>result.value?.fragments.find(p=>p.fragment_id===a.fragment_id)?.start===f.start)
- return { ...f,intent:mark?.intent || '留白',tag:mark ? result.value?.intent_tags[mark.intent] || '无新增标签' : '无新增标签' }
+ const mark=savedAnnotations.value.find(a=>{
+  const target=result.value?.fragments.find(p=>p.fragment_id===a.fragment_id)
+  return target && target.start<=f.start && f.end<=target.end
+ })
+ const target=mark && result.value?.fragments.find(p=>p.fragment_id===mark.fragment_id)
+ const paragraph=target?.kind==='paragraph'
+ return { ...f,intent:mark ? mark.intent+(paragraph?'（段落标注）':'') : '留白',
+  tag:mark && target?.start===f.start ? result.value?.intent_tags[mark.intent] || '无新增标签' : paragraph?'此句不新增标签（同段意图）':'无新增标签' }
 }) || [])
 function adopt(value:Result){result.value=value;draft.value=(value.versions.find(v=>v.revision===value.revision)?.annotations || []).map(a=>({...a}))}
 function addAnnotation(){if(busy.value)return;const f=availableFragments.value.find(v=>v.fragment_id===newFragment.value);if(!f){error.value='请选择不与已有标注重叠的句子或段落';return}draft.value.push({fragment_id:f.fragment_id,intent:newIntent.value});newFragment.value=''}

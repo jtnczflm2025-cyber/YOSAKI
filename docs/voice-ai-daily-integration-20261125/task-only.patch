@@ -1,0 +1,256 @@
+--- before-task/backend/app/voice/ai_daily.py
++++ after-task/backend/app/voice/ai_daily.py
+@@ -21,8 +21,8 @@
+ from .annotation_http_product import HTTPReplyBridge, SavedReplyRepository, _BoundHTTP, _ProductPlans
+ from .annotation_lab import PlanRequest, EditRequest
+ from .annotation_model import ProfilePlanningAdapter
+-from .annotation_planner import AnnotationError, fingerprint
+-from .performance_preferences import apply as apply_performance_preferences
++from .annotation_planner import AnnotationError, fingerprint, render
++from .performance_preferences import CANDIDATE, apply as apply_performance_preferences
+ from .annotation_store import AnnotationStore, ANNOTATION_TABLE_SQL
+ from .elevenlabs_adapter import ElevenLabsAdapter
+ from .realtime_answer_display import DisplayResult
+@@ -141,9 +141,9 @@
+     def __init__(self,store,repository,model,tts):
+         self.store,self.repository,self.model,self.tts=store,repository,model,tts
+         self.enabled,self.deadline,self.tasks=True,20,{}
+-        # Explicit isolation/batch injection only. No daily preference is set by
+-        # installing this code; absent preferences preserve existing hashes.
+-        self.performance_preferences=None
++        # Advisory delivery only, used after the owner's existing AI opt-in.
++        # Never changes Profile/personality, settings, or an existing plan.
++        self.performance_preferences=dict(CANDIDATE)
+ 
+     def source(self,identity,owner,granularity='auto',mode='ai_expression'):
+         prepared=super().source(identity,owner,granularity,mode)
+@@ -185,7 +185,8 @@
+             row=db.execute('SELECT * FROM voice_ai_owner_settings WHERE owner_id=?',(owner,)).fetchone()
+             profiles=[dict(r) for r in db.execute("SELECT id,name,model_name,protocol FROM model_profiles WHERE enabled=1 AND protocol IN('chatgpt_plan','openai_responses')")]
+         return {'available':True,'enabled':bool(row['enabled']) if row else False,
+-                'model_profile_id':row['model_profile_id'] if row else None,'revision':row['revision'] if row else 0,'profiles':profiles}
++                'model_profile_id':row['model_profile_id'] if row else None,'revision':row['revision'] if row else 0,'profiles':profiles,
++                'performance_preferences':dict(self.plans.performance_preferences)}
+     def status(self,identity,owner):
+         value=super().status(identity,owner);value.pop('real_provider_requests',None)
+         for item in value['audio']:item['url']=item['url'].replace('/api/voice-ai-http-lab','/api/voice/ai-http')
+@@ -208,6 +209,43 @@
+         if not audio['expires_at'] or audio['expires_at']<=datetime.now(timezone.utc).isoformat():raise AnnotationError('audio_expired',409)
+         if hashlib.sha256(audio['audio']).hexdigest()!=audio['audio_sha256']:raise AnnotationError('audio_integrity',409)
+         audio_cache.validate_mp3(audio['audio']);return audio['audio']
++
++    def saved_audio(self,message,owner):
++        """Read-only historical expression; never resolves or calls a planner.
++
++        Turning planning off must stop new work, not invalidate a saved audio.
++        Source/Voice/consent/session, expiry and integrity still apply.
++        """
++        source=self.plans.repository.read(message,owner)
++        with self.connect() as db:
++            identities=[r[0] for r in db.execute("SELECT id FROM annotation_plans WHERE owner_id=? AND json_extract(prepared,'$.source.message_id')=? ORDER BY rowid DESC",(owner,message))]
++        for identity in identities:
++            row=self.plans.store.get(identity,owner)
++            if fingerprint(asdict(source))!=fingerprint(row['prepared']['source']):continue
++            with self.connect() as db:
++                audios=[dict(r) for r in db.execute("SELECT preview_sha,revision FROM annotation_audio WHERE plan_id=? AND state='ready' AND expires_at>? ORDER BY revision DESC",(identity,datetime.now(timezone.utc).isoformat()))]
++            if not audios:continue
++            cached=[]
++            for audio in audios:
++                self.audio(identity,owner,audio['preview_sha'])
++                cached.append({'revision':audio['revision'],'url':f"/api/voice/ai-http/plans/{identity}/audio/{audio['preview_sha']}"})
++            revision=cached[0]['revision']
++            selected=next(v for v in row['versions'] if v['revision']==revision)
++            prepared=row['prepared']
++            if selected['metadata']['fallback']:prepared={**prepared,'mode':'none'}
++            preview=render(prepared,selected['annotations'],revision)
++            preview.update(plan_id=identity,effective_mode=prepared['mode'],
++                requested_mode=row['prepared']['mode'],fallback_reason=selected['metadata']['reason'])
++            preview['preview_sha256']=fingerprint(preview)
++            if preview['preview_sha256']!=audios[0]['preview_sha']:raise AnnotationError('audio_preview_binding_changed',409)
++            from .annotation_planner import TAGS
++            text=row['prepared']['safe_text']
++            return {'id':identity,'revision':revision,'state':row['state'],'bridge_state':'completed',
++                'error':None,'reason':None,'cache_read_only':True,'versions':row['versions'],
++                'preview':preview,'audio':[cached[0]],'cached_versions':cached,
++                'fragments':[{**f,'text':text[f['start']:f['end']]} for f in row['prepared']['fragments']],
++                'intent_tags':dict(TAGS),'performance_preferences':row['prepared'].get('performance_preferences')}
++        return None
+ 
+ 
+ class Settings(BaseModel):
+@@ -262,6 +300,12 @@
+             return {'eligible':True,'plan':runtime.status(row[0],owner) if row else None}
+         except AnnotationError as exc:return {'eligible':False,'reason':exc.code,'plan':None}
+         finally:ACTOR.reset(scope)
++    @router.get('/messages/{message}/saved-audio')
++    async def saved_audio(message:int,request:Request):
++        scope=actor(request)
++        try:return {'plan':runtime.saved_audio(message,request.state.user['id'])}
++        except AnnotationError as exc:raise convert(exc)
++        finally:ACTOR.reset(scope)
+     @router.post('/messages/{message}/read')
+     async def read(message:int,request:Request):
+         scope=actor(request);owner=request.state.user['id']
+--- before-task/frontend/src/voice/AIMessageAudio.vue
++++ after-task/frontend/src/voice/AIMessageAudio.vue
+@@ -4,7 +4,7 @@
+ import { voiceAudioPlayer,type PlaybackState } from './voiceAudioPlayer'
+ type Annotation={fragment_id:string;intent:string}
+ type Fragment={fragment_id:string;text:string;kind:string;start:number;end:number}
+-type Result={id:string;revision:number;state:string;bridge_state:string;error:string|null;reason:string|null;preview:{request_text:string;request_characters:number;effective_mode:string;fallback_reason:string|null;parameters:Record<string,string>}|null;audio:{url:string}[];versions:{revision:number;annotations:Annotation[]}[];fragments:Fragment[];intent_tags:Record<string,string>;performance_preferences:{version:string;delivery_target:string}|null;cached_versions:{revision:number;url:string}[]}
++type Result={cache_read_only?:boolean;id:string;revision:number;state:string;bridge_state:string;error:string|null;reason:string|null;preview:{request_text:string;request_characters:number;effective_mode:string;fallback_reason:string|null;parameters:Record<string,string>}|null;audio:{url:string}[];versions:{revision:number;annotations:Annotation[]}[];fragments:Fragment[];intent_tags:Record<string,string>;performance_preferences:{version:string;delivery_target:string}|null;cached_versions:{revision:number;url:string}[]}
+ const props=defineProps<{messageId:number;autoStart?:boolean}>()
+ const emit=defineEmits<{play:[];'playback-state':[value:PlaybackState];'budget-changed':[]}>()
+ const plannerName=ref('')
+@@ -20,12 +20,18 @@
+  return old && old.start<f.end && f.start<old.end
+ })) || [])
+ const rows=computed(()=>result.value?.fragments.filter(f=>f.kind==='sentence').map(f=>{
+- const mark=savedAnnotations.value.find(a=>result.value?.fragments.find(p=>p.fragment_id===a.fragment_id)?.start===f.start)
+- return { ...f,intent:mark?.intent || '留白',tag:mark ? result.value?.intent_tags[mark.intent] || '无新增标签' : '无新增标签' }
++ const mark=savedAnnotations.value.find(a=>{
++  const target=result.value?.fragments.find(p=>p.fragment_id===a.fragment_id)
++  return target && target.start<=f.start && f.end<=target.end
++ })
++ const target=mark && result.value?.fragments.find(p=>p.fragment_id===mark.fragment_id)
++ const paragraph=target?.kind==='paragraph'
++ return { ...f,intent:mark ? mark.intent+(paragraph?'（段落标注）':'') : '留白',
++  tag:mark && target?.start===f.start ? result.value?.intent_tags[mark.intent] || '无新增标签' : paragraph?'此句不新增标签（同段意图）':'无新增标签' }
+ }) || [])
+ function adopt(value:Result){result.value=value;draft.value=(value.versions.find(v=>v.revision===value.revision)?.annotations || []).map(a=>({...a}))}
+ function addAnnotation(){if(busy.value)return;const f=availableFragments.value.find(v=>v.fragment_id===newFragment.value);if(!f){error.value='请选择不与已有标注重叠的句子或段落';return}draft.value.push({fragment_id:f.fragment_id,intent:newIntent.value});newFragment.value=''}
+-async function load(allowAuto=true){const token=epoch;loading.value=true;error.value='';try{const settings=await voiceApi<{model_profile_id:number|null;profiles:{id:number;name:string;model_name:string}[]}>('/ai-http/settings');if(token!==epoch||disposed)return;const chosen=settings.profiles.find(p=>p.id===settings.model_profile_id);plannerName.value=chosen?`${chosen.name} · ${chosen.model_name}`:'未选择';const data=await voiceApi<{eligible:boolean;reason?:string;plan:Result|null}>(`/ai-http/messages/${props.messageId}/state`);if(token!==epoch||disposed)return;eligible.value=data.eligible;if(data.plan)adopt(data.plan);else{result.value=null;draft.value=[];newFragment.value=''}if(!data.eligible)error.value=data.reason==='complete_display_binding_required'?'此消息没有有效的后端完成／展示回执，AI 模式不可用；请选择无标签或手选 thoughtful。':`AI 模式不可用：${data.reason}`;
++async function load(allowAuto=true){const token=epoch;loading.value=true;error.value='';try{const settings=await voiceApi<{model_profile_id:number|null;profiles:{id:number;name:string;model_name:string}[]}>('/ai-http/settings');if(token!==epoch||disposed)return;const chosen=settings.profiles.find(p=>p.id===settings.model_profile_id);plannerName.value=chosen?`${chosen.name} · ${chosen.model_name}`:'未选择';const data=await voiceApi<{eligible:boolean;reason?:string;plan:Result|null}>(`/ai-http/messages/${props.messageId}/state`);if(token!==epoch||disposed)return;eligible.value=data.eligible;if(data.plan)adopt(data.plan);else{result.value=null;draft.value=[];newFragment.value=''}if(!data.eligible && data.reason==='ai_planning_disabled'){const saved=await voiceApi<{plan:Result|null}>(`/ai-http/messages/${props.messageId}/saved-audio`);if(token!==epoch||disposed)return;if(saved.plan){adopt(saved.plan);error.value='AI 规划已关闭；这里只播放已保存版本，不规划、不合成。'}}if(!data.eligible && !result.value?.cache_read_only)error.value=data.reason==='complete_display_binding_required'?'此消息没有有效的后端完成／展示回执，AI 模式不可用；请选择无标签或手选 thoughtful。':`AI 模式不可用：${data.reason}`;
+ loading.value=false;if(allowAuto&&props.autoStart&&!started&&data.eligible){started=true;if(data.plan?.bridge_state==='completed')play(data.plan.audio[0].url);else await run()}}
+ catch(e){if(token===epoch&&!disposed){eligible.value=false;error.value=e instanceof Error?e.message:'AI 模式不可用'}}finally{if(token===epoch&&!disposed)loading.value=false}}
+ function play(url:string){const token=epoch;localStopped.value=false;emit('play');void voiceAudioPlayer.play(props.messageId,[url],s=>{if(!disposed&&token===epoch){playback.value=s;emit('playback-state',s)}})}
+@@ -57,6 +63,7 @@
+     <p>以下对应已保存版本 {{result.revision}}。只影响送读；没有新增标签不等于声学重置，标签作用范围仍限已听评样本。</p>
+     <div class="mapping-scroll"><table aria-label="逐句表达对应"><thead><tr><th>原句</th><th>当前版本意图／留白</th><th>此位置新增标签</th></tr></thead><tbody><tr v-for="row in rows" :key="row.fragment_id"><td>{{row.text}}</td><td>{{row.intent}}</td><td>{{row.tag}}</td></tr></tbody></table></div>
+     <p>段落标注仅在段首插入标签；不声称后续句子已恢复无表演状态。</p>
++    <template v-if="!result.cache_read_only">
+     <div v-for="(a,i) in draft" :key="a.fragment_id"><span>{{result.fragments.find(f=>f.fragment_id===a.fragment_id)?.text}}</span><select v-model="a.intent" aria-label="表达意图" :disabled="busy"><option v-for="intent in intents" :key="intent" :value="intent">{{intent}}</option></select><button type="button" :disabled="busy" @click="draft.splice(i,1)">移除此标注</button></div>
+     <label>新增标注位置<select v-model="newFragment" :disabled="busy"><option value="">请选择句子或段落</option><option v-for="f in availableFragments" :key="f.fragment_id" :value="f.fragment_id">{{f.kind==='sentence'?'句子':'段落'}}：{{f.text}}</option></select></label>
+     <label>新增表达意图<select v-model="newIntent" :disabled="busy"><option v-for="intent in intents" :key="intent" :value="intent">{{intent}}</option></select></label>
+@@ -64,6 +71,7 @@
+     <p v-if="dirty" role="status">标注修改尚未保存；不会重新规划或合成。保存后预览更新，再由你明确朗读。</p>
+     <button type="button" :disabled="busy || !dirty" @click="edit">保存标注（不合成）</button>
+     <button type="button" :disabled="busy || !dirty" @click="draft=savedAnnotations.map(a=>({...a}))">放弃标注修改</button>
++    </template>
+    </div>
+   </template>
+   <button v-for="v in result?.cached_versions || []" :key="v.revision" type="button" @click="play(v.url)">播放表达版本 {{v.revision}}</button>
+--- before-task/frontend/src/voice/AIExpressionSettings.vue
++++ after-task/frontend/src/voice/AIExpressionSettings.vue
+@@ -1,7 +1,7 @@
+ <script setup lang="ts">
+ import { onMounted,ref } from 'vue'
+ import { voiceApi } from './voiceApi'
+-type Settings={available:boolean;enabled:boolean;model_profile_id:number|null;revision:number;profiles:{id:number;name:string;model_name:string}[];reason?:string}
++type Settings={available:boolean;enabled:boolean;model_profile_id:number|null;revision:number;profiles:{id:number;name:string;model_name:string}[];reason?:string;performance_preferences?:{version:string;delivery_target:string}}
+ const value=ref<Settings|null>(null), enabled=ref(false), selected=ref<number|null>(null), confirm=ref(false), error=ref(''), busy=ref(false)
+ async function load(){try{value.value=await voiceApi<Settings>('/ai-http/settings');enabled.value=value.value.enabled;selected.value=value.value.model_profile_id}catch{value.value=null}}
+ onMounted(load)
+@@ -17,9 +17,13 @@
+    <label><input v-model="enabled" type="checkbox" :disabled="busy">启用 AI 表达规划（默认关闭）</label>
+    <label>规划模型档案<select v-model="selected" :disabled="busy"><option :value="null">请选择</option><option v-for="p in value.profiles" :key="p.id" :value="p.id">{{p.name}} · {{p.model_name}}</option></select></label>
+    <p>已选档案：{{value.profiles.find(p=>p.id===selected)?.name ?? '未选择'}}。完整回复通过展示核验后，每条最多新增一次规划（512 输出 token／20秒，不重试）。只改变送读表达，正文不变；不适用于连续通话、WS、长文和其他语言。</p>
++   <p v-if="value.performance_preferences">声音表演偏好：{{value.performance_preferences.delivery_target}} 根据整段语义稀疏安排，可以全部留白；不强制每句加标签，不修改声音档案或聊天人格。旧音频保留原表达版本。</p>
+    <label v-if="enabled"><input v-model="confirm" type="checkbox" :disabled="busy">我确认所选规划档案及新增模型调用；语音合成仍受原日额限制</label>
+    <button type="button" :disabled="busy || (enabled && (!selected || !confirm))" @click="save">保存 AI 表达设置</button>
+   </template>
+   <p role="status">{{error}}</p>
+  </section>
+ </template>
++<style scoped>
++.voice-section p { font-size:17px; line-height:1.75; overflow-wrap:anywhere; }
++</style>
+--- /dev/null
++++ after-task/tests/test_voice_ai_daily_delivery.py
+@@ -0,0 +1,86 @@
++"""Daily delivery changes only: synthetic product routes, no providers."""
++import json
++import tempfile
++import time
++import unittest
++from pathlib import Path
++
++from scripts.voice_ai_chat_candidate_fixture import Fixture
++from backend.app.voice.performance_preferences import CANDIDATE
++
++
++class DailyDelivery(unittest.TestCase):
++    def setUp(self):
++        self.temp=tempfile.TemporaryDirectory(prefix='yosaki-daily-expression-')
++        self.f=Fixture(Path(self.temp.name))
++
++    def tearDown(self):
++        self.f.close();self.temp.cleanup()
++
++    def enable(self,revision=0,enabled=True):
++        return self.f.client.put('/api/voice/ai-http/settings',json={
++            'enabled':enabled,'model_profile_id':self.f.model_id,
++            'expected_revision':revision,'confirm_planning':enabled})
++
++    def generate(self):
++        self.assertEqual(self.enable().status_code,200)
++        message=self.f.chat()['message_id']
++        response=self.f.client.post(f'/api/voice/ai-http/messages/{message}/read',json={})
++        self.assertEqual(response.status_code,200,response.text)
++        identity=response.json()['id']
++        for _ in range(200):
++            value=self.f.client.get('/api/voice/ai-http/plans/'+identity).json()
++            if value['bridge_state'] not in ('planning','synthesizing'):break
++            time.sleep(.01)
++        self.assertEqual(value['bridge_state'],'completed',value)
++        return message,value
++
++    def test_daily_preferences_default_off_no_user_setting_write(self):
++        settings=self.f.client.get('/api/voice/ai-http/settings').json()
++        self.assertFalse(settings['enabled']);self.assertIsNone(settings['model_profile_id'])
++        self.assertEqual(settings['performance_preferences'],CANDIDATE)
++        with self.f.main.connect() as db:
++            self.assertEqual(db.execute('SELECT count(*) FROM voice_ai_owner_settings').fetchone()[0],0)
++        self.assertEqual(self.f.counters()['planning'],0)
++
++    def test_opt_in_request_gets_advisory_preferences_once(self):
++        message,value=self.generate()
++        payload=json.loads(self.f.plan_requests[0]['input'][0]['content'])
++        self.assertEqual(payload['performance_preferences'],CANDIDATE)
++        self.assertEqual(value['performance_preferences'],CANDIDATE)
++        self.assertEqual(self.f.client.get(f'/api/voice/ai-http/messages/{message}/state').json()['plan']['id'],value['id'])
++        self.assertEqual((self.f.chat_count,self.f.plan_count,self.f.tts_count),(1,1,1))
++        self.assertEqual(self.enable(0).status_code,409)
++
++    def test_off_keeps_read_only_saved_mapping_audio_without_dispatch(self):
++        message,value=self.generate()
++        self.assertEqual(self.enable(1,False).status_code,200)
++        state=self.f.client.get(f'/api/voice/ai-http/messages/{message}/state').json()
++        self.assertFalse(state['eligible'])
++        before=self.f.counters()
++        for _ in range(2):
++            response=self.f.client.get(f'/api/voice/ai-http/messages/{message}/saved-audio')
++            self.assertEqual(response.status_code,200,response.text)
++            saved=response.json()['plan']
++            self.assertTrue(saved['cache_read_only'])
++            self.assertEqual(saved['preview']['request_text'],value['preview']['request_text'])
++            self.assertEqual(saved['versions'],value['versions'])
++            self.assertEqual(self.f.client.get(saved['audio'][0]['url']).status_code,200)
++        self.assertEqual(self.f.counters(),before)
++        self.assertEqual(self.f.client.post(f'/api/voice/ai-http/messages/{message}/read',json={}).status_code,403)
++        with self.f.main.connect() as db:db.execute('UPDATE voice_profiles SET revision=revision+1')
++        self.assertIsNone(self.f.client.get(f'/api/voice/ai-http/messages/{message}/saved-audio').json()['plan'])
++        self.assertEqual(self.f.client.get(value['audio'][0]['url']).status_code,409)
++
++    def test_once_only_fallback_audio_is_also_readable_after_disabling(self):
++        self.f.scenario='failed'
++        message,value=self.generate()
++        self.assertEqual(value['state'],'fallback')
++        self.assertEqual(self.enable(1,False).status_code,200)
++        response=self.f.client.get(f'/api/voice/ai-http/messages/{message}/saved-audio')
++        self.assertEqual(response.status_code,200,response.text)
++        self.assertEqual(response.json()['plan']['preview']['request_text'],value['preview']['request_text'])
++        self.assertEqual((self.f.chat_count,self.f.plan_count,self.f.tts_count),(1,1,1))
++
++
++if __name__=='__main__':unittest.main()
