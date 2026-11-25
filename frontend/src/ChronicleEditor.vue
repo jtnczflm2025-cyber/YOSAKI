@@ -3,7 +3,7 @@ import { ref, watch, computed, onMounted, onBeforeUnmount } from 'vue'
 const props = defineProps<{ characterId: number; entryId: string }>()
 const emit = defineEmits<{ saved: [] }>()
 type Field = { value: unknown; token: string; lifecycleStatus: string }
-type RecordView = { entry: { entryId: string; versionId: string; qualifications?:{p2Projection:boolean}; fields: Record<string, Field>; timeEvidence: {occurredAt?:string;occurredDate?:string;rawTime?:string;precision:string}[] }; raw: {kind:string;id:string;speaker:string;text:string}[]; narrative: null | {id:string;body:string;input_hash:string;output_hash:string;status:string;review_status:string} }
+type RecordView = { entry: { entryId: string; versionId: string; qualifications?:{p2Projection:boolean}; fields: Record<string, Field>; timeEvidence: {occurredAt?:string;occurredDate?:string;rawTime?:string;precision:string;timezoneBasis?:string}[] }; raw: {kind:string;id:string;speaker:string;text:string}[]; narrative: null | {id:string;body:string;input_hash:string;output_hash:string;status:string;review_status:string} }
 const record = ref<RecordView|null>(null)
 const title = ref(''), synopsis = ref(''), dialogue = ref('')
 const message = ref(''), error = ref(''), busy = ref(false), dirty = ref(false), rawOpen = ref(false)
@@ -53,6 +53,7 @@ const canPublish=computed(()=>!!record.value && record.value.entry.fields.title.
 const sourceDates=computed(()=>[...new Set((record.value?.entry.timeEvidence || []).map(t=>{
   const value=t.occurredDate || t.occurredAt || t.rawTime
   if(!value) return '发生时间未知'
+  if (t.timezoneBasis==='source_local_day_unverified_zone') return value+'（消息日期，时区未核实）'
   return t.precision==='instant' || t.precision==='day' ? value : `${value}（未核实）`
 }))].join(' — '))
 const labelFields = ['categories', 'tags', 'keywords']

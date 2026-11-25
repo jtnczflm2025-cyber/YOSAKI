@@ -1,7 +1,7 @@
 """Owner's entry-level date correction; original RAW/receipt times stay intact."""
 import json
 import uuid
-from datetime import date
+from datetime import date, datetime
 from . import memory_v2_metadata as metadata, memory_v2_derivation as m3
 
 
@@ -14,14 +14,30 @@ def init_db(db):
     db.execute('CREATE INDEX IF NOT EXISTS ix_chronicle_dates_entry ON mv3_chronicle_dates(entry_id,set_id)')
 
 
+def _calendar_day(item):
+    # Preserve the receipt and the field-set evidence. Only the date projection
+    # uses the source's calendar day; the clock has no known UTC offset.
+    if item['precision'] != 'local_datetime_unverified' or item.get('occurredAt'):
+        return item
+    try:
+        stamp = datetime.fromisoformat(item['rawTime'])
+    except (TypeError, ValueError):
+        return item
+    if stamp.tzinfo is not None or stamp.date().isoformat() != item.get('occurredDate'):
+        return item
+    return dict(item, precision='day', sourcePrecision=item['precision'],
+                timezoneBasis='source_local_day_unverified_zone')
+
+
 def corrected(db, entry, version, original):
+    calendar = [_calendar_day(item) for item in original]
     if not db.execute("SELECT 1 FROM sqlite_master WHERE name='mv3_chronicle_dates'").fetchone():
-        return original
+        return calendar
     row = db.execute('''SELECT d.* FROM mv3_chronicle_dates d JOIN mv3_entry_field_sets s ON s.id=d.set_id
         WHERE d.entry_id=? AND s.version<=? ORDER BY s.version DESC LIMIT 1''',
         (entry['id'], version['version'])).fetchone()
     if row is None or row['source_token'] != version['source_token']:
-        return original
+        return calendar
     return [dict(item, occurredAt=None, occurredDate=row['occurred_date'],
         precision='day' if row['occurred_date'] else 'unknown',
         timezoneBasis='owner_entry_date', correctionVersion=row['set_id']) for item in original]

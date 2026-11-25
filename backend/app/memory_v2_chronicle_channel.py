@@ -148,7 +148,9 @@ def project(db, character_id, owner_id, selected, *, now=None, budget_tokens=102
             retainedBeyondTimeLayer=True))
         retained_cost += cost
     ordinary = [entry_id for entry_id in eligible if entry_id not in retained]
+    from .memory_v2_period_sync import recall_reader
     result = (p2.context_projection(db, character_id, ordinary, now=view_time,
+                 calendar_reader=recall_reader(db,character_id,owner_id,view_time),
                  budget_tokens=budget_tokens-retained_cost, max_blocks=max_blocks-len(safe))
               if ordinary and len(safe) < max_blocks else {'blocks': []})
     for block in result['blocks']:

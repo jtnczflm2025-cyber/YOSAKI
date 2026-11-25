@@ -2432,6 +2432,12 @@ if os.getenv('YOSAKI_CHRONICLE_WORKSPACE', '0') == '1':
         checked_date = os.getenv('YOSAKI_CHRONICLE_PRICES_VERIFIED_DATE')
         if checked_date != datetime.now(timezone.utc).date().isoformat():
             raise ValueError('chronicle_daily_rates_verification_required')
+        return chronicle_profile_key(model_id), {
+            'provider':'openai_responses','model':'gpt-6.1-sol','mode':'standard',
+            'inputUsdPerMillion':'2.00','outputUsdPerMillion':'10.00',
+            'checkedAt':checked_date,
+            'sourceUrl':'https://developers.openai.com/api/docs/models/gpt-6.1-sol'}
+    def chronicle_profile_key(model_id):
         with connect() as db:
             profile=db.execute('SELECT * FROM model_profiles WHERE id=?',(model_id,)).fetchone()
             if (profile is None or not profile['enabled'] or profile['protocol']!='openai_responses'
@@ -2440,11 +2446,17 @@ if os.getenv('YOSAKI_CHRONICLE_WORKSPACE', '0') == '1':
                     or not profile['api_key_encrypted']):
                 raise ValueError('chronicle_approved_model_required')
             key=decrypt_secret(profile['api_key_encrypted'])
-        return key, {
-            'provider':'openai_responses','model':'gpt-6.1-sol','mode':'standard',
-            'inputUsdPerMillion':'2.00','outputUsdPerMillion':'10.00',
-            'checkedAt':checked_date,
-            'sourceUrl':'https://developers.openai.com/api/docs/models/gpt-6.1-sol'}
+        return key
+    def calendar_adapter(model_id,price):
+        from . import memory_v2_period_sync as periods
+        from .memory_v2_responses_adapter import ResponsesAdapter
+        if price!=periods.official_price(datetime.now(timezone.utc).date().isoformat()):
+            raise ValueError('period_official_rates_changed')
+        adapter=ResponsesAdapter(model=periods.MODEL,api_key=chronicle_profile_key(model_id),allow_network=True)
+        adapter.configure_synopsis_stream(lambda record: None)
+        return adapter
+    from .memory_v2_period_sync import PeriodSync
+    calendar_sync=PeriodSync(connect,DATA/'chronicle-period-authority.json',calendar_adapter)
     def chronicle_provider(model_id):
         from .memory_v2_responses_adapter import ResponsesAdapter
         key, price = approved_chronicle_account(model_id)
@@ -2461,7 +2473,7 @@ if os.getenv('YOSAKI_CHRONICLE_WORKSPACE', '0') == '1':
         directory.mkdir(exist_ok=True)
         write_isolated_diagnostic(directory,record)
     memory_v2_chronicle_workspace.install(app, connect, current_session, allowed_origins=ALLOWED_ORIGINS,
-        diagnostic_sink=chronicle_diagnostic, rate_status=chronicle_rates_status,
+        diagnostic_sink=chronicle_diagnostic, rate_status=chronicle_rates_status, calendar_sync=calendar_sync,
         semantic_factories=(chronicle_provider, chronicle_embedding_provider)
             if os.getenv('YOSAKI_CHRONICLE_SEMANTIC_SUPPLEMENT')=='1' else None,
         provider_factory=chronicle_provider if os.getenv('YOSAKI_CHRONICLE_PAID_ENABLED')=='1' else None,

@@ -501,7 +501,7 @@ def unfold_raw(db, character_id, entry_id, source_ordinal, *, offset=0, limit=MA
 
 
 def context_projection(db, character_id, selected_entry_ids, *, now, offset_minutes=480,
-                       budget_tokens=512, max_blocks=5):
+                       budget_tokens=512, max_blocks=5, calendar_reader=None):
     """Project already selected experiences; never retrieve candidates or write cooldown."""
     _checked_view(now, offset_minutes)
     if (not isinstance(selected_entry_ids, (list, tuple)) or len(selected_entry_ids) > 50
@@ -530,7 +530,13 @@ def context_projection(db, character_id, selected_entry_ids, *, now, offset_minu
         version, digest_status = _digest(db, character_id, node)
         use_group = (level in ("L1", "L2", "L3", "L4") and
                      set(m.entry_id for m in node.members).issubset(selected) and version is not None)
-        if use_group:
+        calendar = (calendar_reader(node,selected) if calendar_reader and level in ('L1','L2','L3','L4','L5')
+                    and (not use_group or version['rule_version'].startswith('digest-extractive-')) else None)
+        if calendar:
+            if node.id in seen_nodes:continue
+            job_id,body=calendar
+            candidates=[('calendar_summary','DIGEST',body,job_id,[m.entry_id for m in node.members],_source_refs(node.members))]
+        elif use_group:
             if node.id in seen_nodes:
                 continue
             candidates = [("period_digest", "DIGEST", version["body"], version["id"],
@@ -559,6 +565,7 @@ def context_projection(db, character_id, selected_entry_ids, *, now, offset_minu
                 chosen = {"projectionKind": kind, "viewType": view_type, "level": level,
                           "period": member.period, "timeBasis": member.time_basis,
                           "entryIds": entry_ids, "sourceRefs": refs, "text": text,
+                          "calendarJobId": version_id if kind=="calendar_summary" else None,
                           "digestVersionId": version_id if kind == "period_digest" else None,
                           "narrativeVersionId": version_id if kind == "detailed_narrative" else None,
                           "summaryStatus": digest_status, "estimatedTokens": cost,
@@ -567,7 +574,7 @@ def context_projection(db, character_id, selected_entry_ids, *, now, offset_minu
         if chosen is None:
             rejected.append({"entryId": entry_id, "reason": "budget_exhausted"})
             continue
-        if chosen["projectionKind"] == "period_digest":
+        if chosen["projectionKind"] in ("period_digest","calendar_summary"):
             seen_nodes.add(node.id)
         blocks.append(chosen)
         used += chosen["estimatedTokens"]

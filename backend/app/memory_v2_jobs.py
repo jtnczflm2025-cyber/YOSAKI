@@ -146,7 +146,7 @@ def _dispatch_owner_hash(owner_id, job_id, character_id, ordinal, request_id,
 
 
 _OWNER_BOUND_EXECUTIONS = ('responses_synopsis_v1', 'chronicle_embedding_v1',
-                           'chronicle_semantic_supplement_v1', 'responses_temporal_digest_v1')
+                           'chronicle_semantic_supplement_v1', 'responses_temporal_digest_v1','chronicle_calendar_synopsis_v1')
 
 
 def persist_dispatch_identity(db, job_id, character_id, ordinal, *, original_owner_id=None):

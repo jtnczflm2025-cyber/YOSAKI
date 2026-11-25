@@ -27,6 +27,17 @@ class Generation(Input):
     materialHash: str | None = None
 
 
+class CalendarAuthority(BaseModel):
+    model_config=ConfigDict(extra='forbid',strict=True)
+    characterId:int=Field(gt=0)
+    days:int=Field(ge=1,le=365)
+    perTask:int=Field(gt=0,le=1000000)
+    perDay:int=Field(gt=0,le=10**12)
+    total:int=Field(gt=0,le=10**12)
+    recall:bool
+    futurePublished:bool
+
+
 class IndexScope(BaseModel):
     model_config = ConfigDict(extra='forbid')
     characterId: int = Field(gt=0)
@@ -196,8 +207,55 @@ def confirm_narrative(db, entry_id, payload, owner_id):
     return draft_view(db, payload.characterId, entry_id)
 
 
+class ReviewSelection(Input):
+    previewToken: str = Field(min_length=64, max_length=64)
+
+
+def review_card(db, cid, eid):
+    entry = metadata.read_draft(db, eid, cid)
+    fields = entry['fields']
+    narrative = _draft_narrative(db, cid, entry)
+    days = sorted({x['occurredDate'] for x in entry['timeEvidence'] if x.get('occurredDate')})
+    reasons = []
+    for name, label in [('title', '标题'), ('synopsis', '梗概')]:
+        if not fields[name].get('value'):
+            reasons.append(label + '缺失或已失效')
+    if not narrative:
+        reasons.append('完整精修缺失或已失效')
+    if any(f['lifecycleStatus']=='stale' for f in fields.values()):
+        reasons.append('存在已失效字段')
+    published = entry['qualifications']['p2Projection']
+    signature = metadata.c.token([cid, eid, entry['versionId'], entry['sourceToken'],
+        entry['timeToken'], [(k, f.get('token'), f['lifecycleStatus']) for k,f in sorted(fields.items())],
+        [narrative[k] for k in ('id','input_hash','output_hash','status')] if narrative else None, published])
+    return dict(entryId=eid, version=entry['versionId'], token=signature,
+        title=fields['title'].get('value'), synopsis=fields['synopsis'].get('value'),
+        dates=days, dateBases=sorted({x['timezoneBasis'] for x in entry['timeEvidence']}),
+        narrativeReady=bool(narrative), narrativeId=narrative['id'] if narrative else None, published=published, reasons=reasons,
+        labels={k:fields[k].get('value') for k in ('categories','tags','keywords')})
+
+
+def publish_selected(db, eid, payload, owner_id):
+    cid = payload.characterId
+    card = review_card(db, cid, eid)
+    if card['version'] != payload.expectedVersion or card['token'] != payload.previewToken:
+        raise ValueError('预览后来源、内容或确认状态已变化，请重新预览')
+    if card['published'] or card['reasons']:
+        return dict(status='skipped', reason='已发布' if card['published'] else '；'.join(card['reasons']))
+    detail = metadata.read_draft(db, eid, cid)
+    n = _draft_narrative(db, cid, detail)
+    detail = confirm_narrative(db, eid, Confirm(characterId=cid, expectedVersion=card['version'],
+        versionId=n['id'], inputHash=n['input_hash'], outputHash=n['output_hash']), owner_id)['entry']
+    for name in ('title','synopsis','categories','tags','keywords'):
+        field = detail['fields'][name]
+        if field.get('value') and field['lifecycleStatus'] != 'available':
+            detail = metadata.review_field(db,eid,cid,name,field['token'],owner_id)
+    metadata.publish(db,eid,cid,detail['versionId'],owner_id)
+    return dict(status='published', version=detail['versionId'])
+
+
 def install(app, connect, authenticate, *, allowed_origins=(), provider_factory=None, embedding_factory=None,
-            diagnostic_sink=None, semantic_factories=None, rate_status=None):
+            diagnostic_sink=None, semantic_factories=None, rate_status=None, calendar_sync=None):
     from . import memory_v2_metadata_api, memory_v2_calendar_api, memory_v2_import_api, memory_v2_time_api
     memory_v2_metadata_api.install(app, connect, authenticate, allowed_origins=allowed_origins)
     memory_v2_calendar_api.install(app, connect, authenticate)
@@ -223,6 +281,35 @@ def install(app, connect, authenticate, *, allowed_origins=(), provider_factory=
         reason = disabled_reason if not installed else (
             None if rates['ratesCurrent'] else 'chronicle_daily_rates_verification_required')
         return {**rates, 'enabled': reason is None, 'reason': reason}
+
+    @router.get('/calendar-summaries')
+    def calendar_summaries(characterId:int,user=Depends(identity)):
+        if calendar_sync is None:raise HTTPException(409,'calendar_sync_not_installed')
+        try:return calendar_sync.view(characterId,user['id'])
+        except ValueError as exc:raise HTTPException(403,str(exc)) from None
+
+    @router.post('/calendar-summaries/consent')
+    def calendar_consent(characterId:int,enabled:bool,user=Depends(identity)):
+        if calendar_sync is None:raise HTTPException(409,'calendar_sync_not_installed')
+        try:calendar_sync.toggle(characterId,user['id'],enabled)
+        except ValueError as exc:raise HTTPException(409,str(exc)) from None
+        return {'enabled':enabled}
+
+    @router.post('/calendar-summaries/authorize')
+    def calendar_authorize(body:CalendarAuthority,user=Depends(identity)):
+        if calendar_sync is None:raise HTTPException(409,'calendar_sync_not_installed')
+        try:
+            calendar_sync.configure(body.characterId,user['id'],days=body.days,per_task=body.perTask,
+                per_day=body.perDay,total=body.total,recall=body.recall,future=body.futurePublished)
+        except ValueError as exc:raise HTTPException(409,str(exc)) from None
+        return {'enabled':True}
+
+    @router.post('/calendar-summaries/revoke')
+    def calendar_revoke(characterId:int,user=Depends(identity)):
+        if calendar_sync is None:raise HTTPException(409,'calendar_sync_not_installed')
+        try:calendar_sync.toggle(characterId,user['id'],False,revoke=True)
+        except ValueError as exc:raise HTTPException(409,str(exc)) from None
+        return {'enabled':False}
 
     @router.get('/generation-status')
     def generation_status(user=Depends(identity)):
@@ -612,6 +699,31 @@ def install(app, connect, authenticate, *, allowed_origins=(), provider_factory=
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from None
 
+    @router.get('/review-selection')
+    def review_page(characterId:int, after:int=0, user=Depends(identity)):
+        if after < 0:
+            raise HTTPException(422, 'invalid_cursor')
+        with connect() as db:
+            db.execute('BEGIN')
+            try:
+                channel.authorized(db, characterId, user['id'])
+            except ValueError as exc:
+                raise HTTPException(403, str(exc)) from None
+            rows=db.execute("""SELECT rowid AS cursor,id FROM mv3_entries WHERE character_id=?
+                AND contract_version=2 AND status NOT IN ('archived','superseded') AND rowid>?
+                ORDER BY rowid LIMIT 21""",(characterId,after)).fetchall()
+            items=[]
+            for row in rows[:20]:
+                try:
+                    items.append(review_card(db,characterId,row['id']))
+                except ValueError:
+                    items.append(dict(entryId=row['id'], title=None, reasons=['来源或版本不可用']))
+            return dict(items=items,nextAfter=rows[19]['cursor'] if len(rows)>20 else None)
+
+    @router.post('/review-selection/{entry_id}/publish')
+    def selected_publish(entry_id:str,p:ReviewSelection,user=Depends(identity)):
+        return call(publish_selected,p.characterId,user['id'],entry_id,p,user['id'])
+
     @router.get('/entries/{entry_id}')
     def read(entry_id: str, characterId: int, user=Depends(identity)):
         return call(draft_view, characterId, user['id'], characterId, entry_id)
@@ -804,12 +916,16 @@ def install(app, connect, authenticate, *, allowed_origins=(), provider_factory=
             owners=[r[0] for r in db.execute('SELECT id FROM users')]
         if len(owners)==1: await run_in_threadpool(resume_local,owners[0])
     app.add_event_handler('startup',recover_on_start)
+    if calendar_sync is not None:
+        app.add_event_handler('startup',calendar_sync.start)
+        app.add_event_handler('shutdown',calendar_sync.stop)
 
     @app.middleware('http')
     async def maintain_after_change(request, call_next):
         response=await call_next(request)
         if (request.method in ('POST','PUT','PATCH','DELETE') and response.status_code<300
                 and (request.url.path.startswith('/api/memory-v2/entry-drafts/')
+                     or request.url.path.startswith('/api/memory-v2/workspace/review-selection/')
                      or request.url.path.startswith('/api/memory-v2/workspace/entries/')
                      or request.url.path.startswith('/api/memory-v2/workspace/period-versions/')
                      or request.url.path.startswith('/api/conversations/')
@@ -819,6 +935,9 @@ def install(app, connect, authenticate, *, allowed_origins=(), provider_factory=
                 from starlette.background import BackgroundTasks
                 tasks=BackgroundTasks()
                 if response.background: tasks.add_task(response.background)
+                if calendar_sync is not None and request.url.path.startswith(('/api/memory-v2/entry-drafts/',
+                        '/api/memory-v2/workspace/review-selection/','/api/memory-v2/workspace/entries/','/api/conversations/')):
+                    tasks.add_task(calendar_sync.wake)
                 tasks.add_task(resume_local,user['id']);response.background=tasks
         return response
     app.include_router(router)

@@ -5,6 +5,8 @@ import { ArrowLeft, ArrowRight, BookOpen, CalendarDays, ChevronDown, ChevronRigh
 import './chronicle.css'
 import ChronicleImportWizard from './ChronicleImportWizard.vue'
 import ChronicleEditor from './ChronicleEditor.vue'
+import ChronicleBatchReview from './ChronicleBatchReview.vue'
+import ChroniclePeriodSummaries from './ChroniclePeriodSummaries.vue'
 
 type SourceRef = {kind: string; id: string}
 type Node = {nodeId: string; level: string | null; period: string | null; timeBasis: string; title: string; entrySynopsis?: string | null; entryIds: string[]; entryLabels?: {entryId: string; title: string}[]; sourceRefs: SourceRef[]; memberCount: number; childNodeIds: string[]; summaryStatus: string; taskStatus: string | null; digestVersionId: string | null; summaryPreview?: string; summaryPage?: string | null; nextOffset?: number | null; nextMemberCursor?: string | null; children?: Node[]}
@@ -101,7 +103,7 @@ const previewError = ref('')
 const showImport = ref(false)
 
 const levelNames: Record<string, string> = {L0: '当日纪事', L1: '周记', L2: '月记', L3: '季度', L4: '半年', L5: '年度'}
-const summaryNames: Record<string, string> = {available: '已审核摘要', missing: '摘要缺失', stale_or_unreviewed: '待审核或已失效', child_digest_missing: '下级摘要缺失', not_applicable: '详细条目'}
+const summaryNames: Record<string, string> = {available: '已审核摘要', missing: '独立审核版尚未生成', stale_or_unreviewed: '待审核或已失效', child_digest_missing: '独立审核版等待下级摘要', not_applicable: '详细条目'}
 const currentCharacter = computed(() => characters.value.find(x => x.id === characterId.value))
 const navIds = computed(() => showSearch.value ? cards.value.map(x => x.entryId) : activeNode.value?.entryIds ?? [])
 const currentIndex = computed(() => navIds.value.indexOf(selectedEntry.value?.entryId ?? ''))
@@ -187,7 +189,7 @@ function previewTimeIso() {
 }
 
 function sourceRoleLabel(role: string) { return role === 'assistant' ? '阿夜的模型发言' : role === 'user' ? '用户发言' : '活动证据' }
-function projectionLabel(kind: string) { return ({period_digest:'周期 DIGEST', detailed_narrative:'详细 NARRATIVE', entry_synopsis:'单经历梗概', title_index:'标题索引'} as Record<string,string>)[kind] || kind }
+function projectionLabel(kind: string) { return ({calendar_summary:'模型周期摘要',period_digest:'周期 DIGEST', detailed_narrative:'详细 NARRATIVE', entry_synopsis:'单经历梗概', title_index:'标题索引'} as Record<string,string>)[kind] || kind }
 function rejectionLabel(reason: string) { return ({entry_missing_or_stale:'来源或权限已失效', duplicate_experience:'同一经历已计入', block_limit:'达到块数上限', budget_exhausted:'Token 预算不足', narrative_stale:'详细纪事已失效'} as Record<string,string>)[reason] || reason }
 function entryTitle(id: string) { return cards.value.find(x => x.entryId === id)?.title || activeNode.value?.entryLabels?.find(x => x.entryId === id)?.title || (selectedEntry.value?.entryId === id ? selectedEntry.value.title : `经历 ${id.slice(0, 8)}`) }
 
@@ -669,6 +671,7 @@ onMounted(async () => {
         <section class="chronicle-main">
           <div class="chronicle-page-kicker"><CalendarDays :size="16" /> {{ currentCharacter?.name || '角色' }}的记忆年历 <span>·</span> {{ asOf.slice(0,10) }} 视角</div>
           <ChronicleImportWizard v-if="showImport && characterId !== null" :character-id="characterId" />
+          <ChronicleBatchReview v-if="characterId" :key="characterId" :cid="characterId" :dirty="!!editorRef?.dirty" @published="if(!editorRef?.dirty)editorId=null;refreshAll();loadProgressiveDrafts()" />
           <details class="projection-diagnostics"><summary>待补齐的经历草稿</summary>
             <p>仅用于整理与查看；待审字段不会进入记忆投影。</p>
             <button class="text-button" :disabled="draftBusy" @click="loadProgressiveDrafts()">{{ draftBusy ? '正在校验来源…' : '读取草稿' }}</button>
@@ -682,17 +685,18 @@ onMounted(async () => {
               <button v-if="draftNext !== null" class="text-button" :disabled="draftBusy" @click="loadProgressiveDrafts(true)">下一页草稿</button>
             </template>
           </details>
-          <ChronicleEditor v-if="editorId && characterId" ref="editorRef" :key="editorId" :character-id="characterId" :entry-id="editorId" @saved="loadProgressiveDrafts()" />
+          <ChronicleEditor v-if="editorId && characterId" ref="editorRef" :key="editorId" :character-id="characterId" :entry-id="editorId" @saved="loadProgressiveDrafts();refreshAll()" />
+          <ChroniclePeriodSummaries @open-entry="openEntry" v-if="characterId" :key="characterId" :cid="characterId" :period="activeNode?.period" :revision="asOf" />
           <div v-if="activeNode" class="period-card">
             <div class="period-heading"><div><div class="period-crumbs"><button v-if="nodeTrail.length" @click="upNode"><ArrowLeft :size="14" /> 上一级</button><span v-else>当前时间层级</span><ChevronRight :size="13" /> {{ activeNode.level || '未定' }}</div><h1>{{ activeNode.title }}</h1><p>{{ activeNode.level ? `${levelNames[activeNode.level]} · ${periodLabel(activeNode)}` : '发生时间未核实' }} · {{ activeNode.memberCount }} 条经历</p></div><span class="period-level">{{ activeNode.level || '时间未定' }}</span></div>
-            <div class="period-status"><span :class="`summary-${activeNode.summaryStatus}`"><BookOpen :size="14" /> {{ summaryNames[activeNode.summaryStatus] || activeNode.summaryStatus }}</span><span v-if="activeNode.taskStatus" class="task-status"><Clock3 :size="14" /> 任务：{{ activeNode.taskStatus }}</span><span v-if="activeNode.timeBasis !== 'occurred_at'">时间依据：{{ activeNode.timeBasis === 'recorded_at' ? '记录时间' : '未核实' }}</span></div>
+            <div class="period-status"><span :class="`summary-${activeNode.summaryStatus}`"><BookOpen :size="14" /> {{ summaryNames[activeNode.summaryStatus] || activeNode.summaryStatus }}</span><span v-if="activeNode.taskStatus" class="task-status"><Clock3 :size="14" /> 任务：{{ activeNode.taskStatus }}</span><span v-if="activeNode.timeBasis !== 'occurred_at'">时间依据：{{ activeNode.timeBasis === 'occurred_day' ? '来源日历日期' : activeNode.timeBasis === 'recorded_at' ? '记录时间' : '未核实' }}</span></div>
             <div v-if="digestDisplay && digestDisplay.mode !== 'unavailable'" class="period-digest"><div class="section-label">周期 DIGEST <small>{{ digestDisplay.label }} · 已审核派生{{ digestDisplay.mode === 'extractive' ? ' · 非语义概括' : '' }}</small></div>
               <template v-if="digestDisplay.mode === 'extractive'"><div v-for="section in digestDisplay.sections" :key="section.ordinal" class="digest-section"><p>{{ section.text }}</p><details class="source-details"><summary>来源 {{ section.ordinal + 1 }} · {{ sourceRoleLabel(digestDisplay.sourceMeta[section.ordinal]?.role || '') }} <span v-if="section.incomplete">· 分页节选</span></summary><dl><dt>来源 ID</dt><dd>{{ digestDisplay.sourceMeta[section.ordinal]?.sourceRef.kind }}:{{ digestDisplay.sourceMeta[section.ordinal]?.sourceRef.id }}</dd><dt>原始角色</dt><dd>{{ digestDisplay.sourceMeta[section.ordinal]?.role }}</dd><dt>来源状态</dt><dd>{{ digestDisplay.sourceMeta[section.ordinal]?.status }}</dd><dt>证据类型</dt><dd>{{ digestDisplay.sourceMeta[section.ordinal]?.evidenceKind }}</dd></dl></details></div></template>
               <template v-else><p>{{ digestDisplay.text }}</p><details class="source-details"><summary>展开 {{ digestDisplay.sourceMeta.length }} 条来源元数据</summary><dl v-for="source in digestDisplay.sourceMeta" :key="source.ordinal"><dt>来源 {{ source.ordinal + 1 }}</dt><dd>{{ source.sourceRef.kind }}:{{ source.sourceRef.id }} · {{ source.role }} · {{ source.status }}</dd></dl></details></template>
               <button v-if="digestDisplay.nextOffset !== null" class="text-button" :disabled="summaryBusy" @click="moreSummary">继续读取摘要 <ChevronDown :size="13" /></button></div>
             <p v-else-if="summaryBusy" class="period-fallback">正在校验周期摘要…</p>
-            <p v-else-if="activeNode.level && ['L1','L2','L3','L4'].includes(activeNode.level)" class="period-fallback">本时段没有可用的周期摘要。仍可逐层查看已确认的单经历梗概与完整精修记录。</p>
-            <button v-if="activeNode.level && ['L1','L2','L3','L4'].includes(activeNode.level)" class="text-button" @click="openPeriodProcessing">整理这个周期的摘要</button>
+            <p v-else-if="activeNode.level && ['L1','L2','L3','L4'].includes(activeNode.level)" class="period-fallback">此处显示另行审核的周期版本。自动生成的周、月、季度、半年和年度回顾见上方「周期摘要」。</p>
+            <button v-if="activeNode.level && ['L1','L2','L3','L4'].includes(activeNode.level)" class="text-button" @click="openPeriodProcessing">另行生成待审核版本</button>
             <section v-if="periodOpen" class="period-processing" :aria-busy="periodBusy"><p role="status">{{ periodTask }}</p><button class="text-button" :disabled="periodBusy" @click="loadPeriodTask().catch(failed)">刷新周期任务状态</button><p>只使用当前有资格的完整成员及直接下级摘要；缺失下级时停止，不自动降级。一次计数和一次生成，上限 USD 0.12288；超出单次容量明确拒绝。生成后仍需分别确认内容与启用。</p><select v-model="periodModel" aria-label="周期摘要模型"><option v-for="m in periodModels" :key="m.id" :value="m.id">{{m.name}}</option></select><label><input type="checkbox" v-model="periodConsent" />同意本次把上述周期材料发给 OpenAI 并承担限定费用</label><button :disabled="!periodConsent || periodBusy || !periodModel || !!periodDraft" @click="generatePeriod">{{periodBusy ? '正在处理…' : '授权一次维护生成'}}</button><article v-if="periodDraft"><h3>待审周期摘要</h3><div style="white-space:pre-wrap;line-height:1.9;max-width:860px">{{periodDraft.body}}</div><template v-if="periodDraft.review_status!=='human_checked'"><label><input type="checkbox" v-model="periodReviewConsent" />我已对照本周期的完整成员，确认内容</label><button :disabled="!periodReviewConsent || periodBusy" @click="decidePeriod('review')">确认这份周期摘要</button></template><template v-else-if="periodDraft.status!=='active'"><label><input type="checkbox" v-model="periodActivateConsent" />启用这份已确认的摘要</label><button :disabled="!periodActivateConsent || periodBusy" @click="decidePeriod('activate')">启用这个版本</button></template></article></section>
             <div v-if="activeNode.children?.length" class="child-grid"><button v-for="child in activeNode.children" :key="child.nodeId" class="child-card" @click="openNode(child, true)"><span class="level-marker">{{ child.level }}</span><strong>{{ periodLabel(child) }}</strong><small>{{ child.memberCount }} 条经历 · {{ summaryNames[child.summaryStatus] || '可展开' }}</small><ArrowRight :size="16" /></button></div>
             <div v-if="activeNode.entryIds.length" class="period-entries"><div class="section-label">本时段经历 <small>{{ activeNode.memberCount }} 条</small></div><div class="period-entry-list"><div v-for="(id, index) in activeNode.entryIds" :key="id" class="period-entry-row"><button class="entry-open" :class="{selected: selectedEntry?.entryId === id}" @click="openEntry(id)"><span>{{ String(index+1).padStart(2,'0') }}</span> {{ entryTitle(id) }} <ArrowRight :size="14" /></button><button class="preview-pick" :aria-label="`${previewSelectedIds.includes(id) ? '移出' : '选入'}投影预览：${entryTitle(id)}`" @click="togglePreview(id)">{{ previewSelectedIds.includes(id) ? '已选' : '选入预览' }}</button></div></div><button v-if="memberNext" class="text-button" @click="moreMembers">加载更多经历 <ChevronDown :size="13" /></button></div>
