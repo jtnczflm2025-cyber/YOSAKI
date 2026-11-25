@@ -64,6 +64,6 @@ R2 Owner原听评继续保持：**“语气安排贴合语义、整体像阿夜�
 
 ## Git及后续范围
 
-[精确文件／依赖／工作区源码集合指纹](voice-ai-daily-integration-20261125/manifest.json) · [相对开工基线的任务专属补丁](voice-ai-daily-integration-20261125/task-only.patch)。这是三份产品文件＋一份测试的任务差异，非相对HEAD的整个未提交差异；这些文件此前已含未跟踪的Voice实现。本次不暂存、提交或推送，既存Git index不动；不纳入凭据、私有数据库、session、备份或无关Memory／UI修改。
+[精确文件／依赖／工作区源码集合指纹](voice-ai-daily-integration-20261125/manifest.json) · [相对开工基线的任务专属补丁](voice-ai-daily-integration-20261125/task-only.patch)。这是三份产品文件＋一份测试的任务差异，非相对HEAD的整个未提交差异；这些文件此前已含未跟踪的Voice实现。前次安装收尾当时未暂存、提交或推送；本轮最终归档已在独立任务分支提交并同步，见[Git交接](VOICE_FINAL_ARCHIVE_20261125.md)。原工作区既存Git暂存内容不动；不纳入凭据、私有数据库、session、备份或无关Memory／UI修改。
 
 本范围无剩余安装阻塞。连续通话／WS／更多语言／长文的新AI规划接入、标签跨文本声学稳定性继续单列；真实跨段朗读未通过，所有历史unknown及实际费用未知原样保留。本次没有下一批真实请求或新收费收据。
