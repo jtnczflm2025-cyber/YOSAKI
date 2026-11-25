@@ -15,22 +15,23 @@ const reasons:Record<string,string>={output_invalid_or_no_longer_eligible:'生�
 const current=computed(()=>rows.value.find(row=>row.period===key.value))
 const statuses:Record<string,string>={waiting:'等待生成',queued:'正在核对输入',running:'正在生成',unknown:'请求已派发，等待可靠结果',failed:'本次生成未完成',member_missing:'有经历尚缺已确认的梗概',budget_blocked:'预算不足',outside_initial_scope:'本周期含授权范围外的经历',off:'自动更新已关闭',cancelled:'已取消',paused:'已暂停'}
 let timer:ReturnType<typeof setTimeout>|undefined
+const received=ref(false)
 let seq=0
 async function load(reset=false){
  const n=++seq;clearTimeout(timer)
- if(reset){rows.value=[];key.value='';configured.value=false}
+ if(reset){received.value=false;rows.value=[];key.value='';configured.value=false}
  try{
   const r=await fetch('/api/memory-v2/workspace/calendar-summaries?characterId='+props.cid,{cache:'no-store'})
   if(!r.ok)throw Error('读取周期摘要失败（'+r.status+'）')
   const data=await r.json();if(n!==seq)return
-  bounded.value=data.bounded;recall.value=data.recall;check.value=data.check;budget.value=data.budget
+  received.value=true;bounded.value=data.bounded;recall.value=data.recall;check.value=data.check;budget.value=data.budget
   rows.value=data.periods;enabled.value=data.enabled;configured.value=data.configured
   error.value=data.error?'本次检查遇到问题：'+(reasons[data.error]||data.error):''
   if(!rows.value.some(x=>x.period===key.value)){
    key.value=rows.value.find(x=>x.period===props.period)?.period||rows.value.find(x=>x.status!=='outside_initial_scope')?.period||rows.value[0]?.period||''
   }
   if(enabled.value&&!error.value&&rows.value.some(x=>['waiting','queued','running','unknown'].includes(x.status)))timer=setTimeout(()=>load(),10000)
- }catch(e){if(n===seq){rows.value=[];error.value=String(e)}}
+ }catch(e){if(n===seq){received.value=false;rows.value=[];error.value=(e instanceof Error?e.message:'读取周期摘要失败')+'。恢复连接后可重新读取。'}}
 }
 async function change(kind:'authorize'|'revoke'){
  if(busy.value)return
@@ -51,9 +52,12 @@ async function toggle(){
  try{const r=await fetch('/api/memory-v2/workspace/calendar-summaries/consent?characterId='+props.cid+'&enabled='+!enabled.value,{method:'POST'})
  if(!r.ok)throw Error('未能更改授权');await load()}catch(e){error.value=String(e)}finally{busy.value=false}
 }
+function refreshVisible(){if(!document.hidden && !busy.value)void load()}
+document.addEventListener('visibilitychange',refreshVisible)
+window.addEventListener('online',refreshVisible)
 watch(()=>[props.cid,props.revision],()=>load(true),{immediate:true})
 watch(()=>props.period,p=>{if(p&&rows.value.some(x=>x.period===p))key.value=p})
-onBeforeUnmount(()=>{seq++;clearTimeout(timer)})
+onBeforeUnmount(()=>{seq++;clearTimeout(timer);document.removeEventListener('visibilitychange',refreshVisible);window.removeEventListener('online',refreshVisible)})
 </script>
 <template>
 <section class="period-card" aria-label="周期摘要">
@@ -62,11 +66,11 @@ onBeforeUnmount(()=>{seq++;clearTimeout(timer)})
 <template v-if="current"><p>{{current.count}} 条已发布经历，其中 {{current.ready}} 条有已确认的单条梗概。</p>
 <p v-if="current.body" class="reading-text">{{current.body}}</p><p v-else role="status">{{statuses[current.status]||current.status}}<span v-if="current.reason"> · {{reasons[current.reason]||current.reason}}</span></p>
 <small v-if="current.body">模型自动统稿 · 根据本周期当前已确认梗概生成</small><details v-if="current.members?.length"><summary>查看本周期经历与完整精修</summary><button v-for="member in current.members" :key="member.id" @click="emit('open-entry',member.id)">{{member.title}}</button></details></template>
-<p v-else-if="!error">本角色暂无可按日期归入周期的已发布经历。</p>
+<p v-else-if="received && !error">本角色暂无可按日期归入周期的已发布经历。</p>
 <p v-if="error" role="alert">{{error}}</p>
-<p role="status">本地维护 · {{enabled?'自动付费已开启':bounded?'自动付费已暂停':'自动付费未授权'}} · {{pending}} 个周期尚无可用正文</p>
-<p>上次检查 {{dateText(check.lastCheck)}}，下次 {{dateText(check.nextCheck)}}（香港时间）。</p>
-<details><summary>自动更新设置</summary>
+<p v-if="received" role="status">本地维护 · {{enabled?'自动付费已开启':bounded?'自动付费已暂停':'自动付费未授权'}} · {{pending}} 个周期尚无可用正文</p>
+<details v-if="received"><summary>自动更新设置</summary><p>上次检查 {{dateText(check.lastCheck)}}，下次 {{dateText(check.nextCheck)}}（香港时间）。</p>
+
 <p>服务启动、发布变动及每日零点检查。周、月、季度随发布整理；达到半年档或年度档后补齐对应回顾。只有当前已发布、日期明确且已确认的标题和梗概参与。</p>
 <p>自动摘要用于召回：{{recall?'已授权，按实际命中范围核验':'未授权'}}。展开仍只读取已确认的完整精修。</p>
 <template v-if="budget.perTask"><p>每篇 {{usd(budget.perTask)}}，每日 {{usd(budget.perDay)}}，总额 {{usd(budget.total)}}，到期 {{dateText(budget.endsAt)}}。</p><p>已估算 {{usd(budget.spent)}} · 预留 {{usd(budget.reserved)}} · 今日占用 {{usd(budget.today)}}（每日预算按 UTC）。</p></template>

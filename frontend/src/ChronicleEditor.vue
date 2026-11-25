@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, watch, computed, onMounted, onBeforeUnmount } from 'vue'
+import type {ReviewChange} from './chronicleReviewChange'
 const props = defineProps<{ characterId: number; entryId: string }>()
-const emit = defineEmits<{ saved: [] }>()
+const emit = defineEmits<{ saved: []; revised:[change:ReviewChange] }>()
 type Field = { value: unknown; token: string; lifecycleStatus: string }
 type RecordView = { entry: { entryId: string; versionId: string; qualifications?:{p2Projection:boolean}; fields: Record<string, Field>; timeEvidence: {occurredAt?:string;occurredDate?:string;rawTime?:string;precision:string;timezoneBasis?:string}[] }; raw: {kind:string;id:string;speaker:string;text:string}[]; narrative: null | {id:string;body:string;input_hash:string;output_hash:string;status:string;review_status:string} }
 const record = ref<RecordView|null>(null)
@@ -125,6 +126,11 @@ async function act(action:()=>Promise<void>, success:string, area:FeedbackArea='
 async function saveText() {
   if(!record.value) return
   const current=record.value
+  const fields=[
+    {label:'标题',before:String(current.entry.fields.title.value??''),after:title.value},
+    {label:'梗概',before:String(current.entry.fields.synopsis.value??''),after:synopsis.value},
+    {label:'精修正文',before:current.narrative?.body??'',after:dialogue.value}
+  ].filter(field=>field.before!==field.after)
   const savedArea:FeedbackArea=dialogue.value!==(current.narrative?.body ?? '')?'narrative':synopsis.value!==(current.entry.fields.synopsis.value ?? '')?'synopsis':'text'
   await act(async()=>{
     if(!dialogue.value.trim() && current.narrative?.body) throw new Error('精修记录不能为空；原有记录未删除，请保留正文或取消修改。')
@@ -139,6 +145,11 @@ async function saveText() {
       await request(`${url()}/narrative`,'POST',{characterId:props.characterId,expectedVersion:current.entry.versionId,expectedNarrativeVersionId:current.narrative?.id ?? null,body:dialogue.value})
     }
     await load(true)
+    const saved=record.value
+    if(saved && fields.length && saved.entry.entryId===current.entry.entryId){
+      const values:Record<string,string>={'标题':String(saved.entry.fields.title.value??''),'梗概':String(saved.entry.fields.synopsis.value??''),'精修正文':saved.narrative?.body??''}
+      if(fields.every(field=>field.after===values[field.label]))emit('revised',{characterId:props.characterId,entryId:saved.entry.entryId,version:saved.entry.versionId,narrativeId:saved.narrative?.id??null,fields})
+    }
   },'修改已保存并重新读取；修改过的内容需重新确认，其余状态见各分区。',savedArea)
 }
 async function cancelEdit() { if(!dirty.value || await askConfirmation('放弃未保存的文字修改？')) void load(true) }

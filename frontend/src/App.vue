@@ -995,7 +995,6 @@ async function send() {
   if(pendingToolCount.value){errorMessage.value='请先处理正文中的工具确认或等待执行完成。';return}
   const cap = chronicleChatConsent.value && chronicleChatAvailable.value ? chronicleChatCap.value : 0
   const waitSeconds = chronicleChatWaitSeconds.value
-  clearChronicleChatConsent()
   await sendText(draft.value.trim(), undefined, cap, waitSeconds)
 }
 async function sendText(text:string, callTurn?:string, chronicleCap=0, chronicleWait:12|30=12) {
@@ -1010,6 +1009,7 @@ async function sendText(text:string, callTurn?:string, chronicleCap=0, chronicle
   if(callTurn && (!activeCall || callTurnId.value!==callTurn)) return
   let settingsTicket:PendingSettings|null=null
   try{if(!activeCall)settingsTicket=reserveNextSettings()}catch(e){errorMessage.value=e instanceof Error?e.message:'单次设置暂存失败';return}
+  if(!activeCall)clearChronicleChatConsent()
   scribeCancelEpoch.value++
   stopAutoRead()
   const optimistic:Message={role:'user',content:text||'[附件]',time:timeOf()}; messages.value.push(optimistic); if(!callTurn)draft.value=''; isStreaming.value=true; errorMessage.value=''
@@ -1129,7 +1129,7 @@ onBeforeUnmount(() => { navigator.mediaDevices?.removeEventListener?.('devicecha
                     <button v-if="chronicleChatInstalled && !callId" :aria-pressed="chronicleChatConsent" @click="showChatPanel('memory')">{{chronicleChatConsent ? '本条补查：允许' : '本条补查'}}</button>
                   </div>
                   <button v-if="isStreaming" class="send-btn ready" aria-label="停止生成" @click="stopGeneration"><X :size="16"/></button>
-                  <button v-else class="send-btn" :disabled="Boolean(callId) || !!pendingToolCount" :class="{ready:draft.trim()}" aria-label="发送消息" @click="send"><Send :size="16"/></button>
+                  <button v-else class="send-btn" :disabled="Boolean(callId) || !!pendingToolCount || enhancementBusy || !nextSettingsReady || (!draft.trim() && !pendingAttachments.length)" :class="{ready:draft.trim()}" aria-label="发送消息" @click="send"><Send :size="16"/></button>
                 </div>
               </div>
               <div v-if="chronicleChatConsent" class="chat-paid-selection">仅本条允许补查 · 最多等待 {{chronicleChatWaitSeconds}} 秒 · 上限 USD {{(chronicleChatCap/1000000).toFixed(3)}}<button @click="clearChronicleChatConsent">撤销</button></div>

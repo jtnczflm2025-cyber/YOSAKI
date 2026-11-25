@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { theme, toggleTheme } from './ui/theme'
-import { computed, onMounted, ref } from 'vue'
+import { watch, computed, onMounted, ref } from 'vue'
 import { ArrowLeft, ArrowRight, BookOpen, CalendarDays, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, FileText, Layers3, LoaderCircle, LogIn, Moon, RefreshCw, Search, ShieldCheck, Sun, X } from 'lucide-vue-next'
 import './chronicle.css'
 import ChronicleImportWizard from './ChronicleImportWizard.vue'
 import ChronicleEditor from './ChronicleEditor.vue'
+import type {ReviewChange} from './chronicleReviewChange'
 import ChronicleBatchReview from './ChronicleBatchReview.vue'
 import ChroniclePeriodSummaries from './ChroniclePeriodSummaries.vue'
 
@@ -66,6 +67,22 @@ async function loadProgressiveDrafts(more = false) {
   finally { draftBusy.value = false }
 }
 const editorId = ref<string|null>(null)
+const importRef=ref<{dirty:boolean}|null>(null)
+const reviewPanel=ref<{reviewBatch:(ids:string[])=>Promise<void>;busy:boolean}|null>(null)
+function openBatchReview(ids:string[]){
+  if(!reviewPanel.value || reviewPanel.value.busy)return
+  void reviewPanel.value.reviewBatch(ids)
+  document.getElementById('chronicle-review')?.scrollIntoView({block:'start'})
+}
+const reviewRevision=ref(0)
+const reviewChanges=ref<Record<string,ReviewChange>>({})
+function revised(change:ReviewChange){if(change.characterId===characterId.value)reviewChanges.value[change.entryId]=change}
+watch(characterId,()=>{reviewChanges.value={}})
+function draftsChanged(){reviewRevision.value++;void loadProgressiveDrafts();void refreshAll()}
+function toggleImport(){
+  if(importRef.value?.dirty && !window.confirm('放弃导入面板中未保存的修改？'))return
+  showImport.value=!showImport.value
+}
 const editorRef = ref<{dirty:boolean}|null>(null)
 function editDraft(id:string) {
   if(editorRef.value?.dirty && !window.confirm('有未保存的修改。放弃后打开另一条？')) return
@@ -241,11 +258,13 @@ async function initialize() {
 
 async function changeRole(event: Event) {
   const select=event.target as HTMLSelectElement
-  if(editorRef.value?.dirty && !window.confirm('有未保存的修改。放弃后切换角色？')) { select.value=String(characterId.value ?? '');return }
+  if((editorRef.value?.dirty || importRef.value?.dirty) && !window.confirm('有未保存的修改。放弃后切换角色？')) { select.value=String(characterId.value ?? '');return }
   characterId.value=Number(select.value);editorId.value=null
   await refreshAll()
 }
+let entryEpoch=0,viewEpoch=0,rawEpoch=0
 async function refreshAll() {
+  const ticket=++entryEpoch
   if (characterId.value === null) return
   asOf.value = new Date().toISOString()
   activeNode.value = null; nodeTrail.value = []; selectedEntry.value = null
@@ -255,7 +274,7 @@ async function refreshAll() {
   expandedYears.value = []; expandedMonths.value = []
   error.value = ''; notice.value = ''
   await Promise.all([loadTree(), loadStatus(), searchEntries()])
-  if (tree.value[0]) await openNode(tree.value[0])
+  if (tree.value[0] && ticket===entryEpoch && !showSearch.value) await openNode(tree.value[0])
 }
 
 async function loadStatus() {
@@ -284,10 +303,12 @@ async function loadTree(more = false) {
 
 async function openNode(item: Node, down = false, preserveTrail = false) {
   if (characterId.value === null || nodeLoading.value) return
+  const ticket=++entryEpoch
   nodeLoading.value = true; error.value = ''; selectedEntry.value = null
   try {
     const node = await getJson<Node>(`/api/memory-v2/chronicle/nodes/${encodeURIComponent(item.nodeId)}`,
       {characterId: characterId.value, asOf: asOf.value, memberLimit: 50})
+    if(ticket!==entryEpoch)return
     if (down && activeNode.value) nodeTrail.value = [...nodeTrail.value, activeNode.value]
     else if (!preserveTrail) nodeTrail.value = []
     if (activeNode.value?.nodeId !== node.nodeId) {
@@ -299,7 +320,7 @@ async function openNode(item: Node, down = false, preserveTrail = false) {
     digestDisplay.value = null
     memberNext.value = node.nextMemberCursor ?? null
     if (node.summaryStatus === 'available') await loadDigest(node)
-    if (activeNode.value?.nodeId === node.nodeId && node.entryIds.length === 1 && !node.children?.length) await openEntry(node.entryIds[0])
+    if (ticket===entryEpoch && !showSearch.value && activeNode.value?.nodeId === node.nodeId && node.entryIds.length === 1 && !node.children?.length) await openEntry(node.entryIds[0])
   } catch (exc) { failed(exc) } finally { nodeLoading.value = false }
 }
 
@@ -513,53 +534,72 @@ function applySearch() { showSearch.value = true; void searchEntries() }
 function clearSearch() { query.value = ''; fromDate.value = ''; toDate.value = ''; showSearch.value = false; void searchEntries() }
 
 async function openEntry(entryId: string) {
-  if (characterId.value === null || entryLoading.value) return
+  if (characterId.value === null) return
+  const ticket=++entryEpoch
   entryLoading.value = true; error.value = ''
-  selectedEntry.value = null; viewText.value = ''; rawText.value = ''
+  selectedEntry.value = null; viewText.value = ''; rawText.value = '';viewNext.value=null;rawNext.value=null
   try {
-    selectedEntry.value = await getJson<Entry>(`/api/memory-v2/calendar/entries/${encodeURIComponent(entryId)}`,
+    const entry = await getJson<Entry>(`/api/memory-v2/calendar/entries/${encodeURIComponent(entryId)}`,
       {characterId: characterId.value})
+    if(ticket!==entryEpoch)return
+    selectedEntry.value=entry
     activeView.value = 'NARRATIVE'
     if(selectedEntry.value.views.NARRATIVE.status === 'available') await loadView()
     else viewText.value='精修后的对话记录尚未完成或尚未确认。梗概不会替代全文。'
-  } catch (exc) { failed(exc) } finally { entryLoading.value = false }
+  } catch (exc) { if(ticket===entryEpoch)failed(exc) } finally { if(ticket===entryEpoch)entryLoading.value=false }
 }
 
 async function chooseView(view: 'RAW' | 'CLEANED' | 'NARRATIVE') {
   if (!selectedEntry.value || selectedEntry.value.views[view].status !== 'available') return
+  ++viewEpoch;++rawEpoch;viewBusy.value=false;rawBusy.value=false
   activeView.value = view
   if(view === 'RAW') await loadRaw(0)
   else await loadView()
 }
 
 async function loadView(more = false) {
-  if (!selectedEntry.value || characterId.value === null || viewBusy.value) return
+  if (!selectedEntry.value || characterId.value === null || (more && viewBusy.value)) return
+  const ticket=++viewEpoch,entryTicket=entryEpoch
+  const current=()=>ticket===viewEpoch && entryTicket===entryEpoch
   if (activeView.value === 'RAW') { viewText.value = ''; return }
   viewBusy.value = true
   try {
     const page = await getJson<TextPage>(`/api/memory-v2/calendar/entries/${encodeURIComponent(selectedEntry.value.entryId)}/views/${activeView.value}`,
       {characterId: characterId.value, offset: more ? viewNext.value : 0,
         versionId: more ? viewVersion.value : null, limit: 4096})
+    if(!current())return
     viewText.value = more ? viewText.value + page.text : page.text
     viewNext.value = page.nextOffset; viewVersion.value = page.versionId ?? null
-  } catch (exc) { viewText.value = ''; viewNext.value = null; failed(exc) }
-  finally { viewBusy.value = false }
+  } catch (exc) { if(!current())return;viewText.value = ''; viewNext.value = null; failed(exc) }
+  finally { if(ticket===viewEpoch)viewBusy.value = false }
 }
 
 async function loadRaw(ordinal: number, more = false) {
-  if (!selectedEntry.value || characterId.value === null || rawBusy.value) return
+  if (!selectedEntry.value || characterId.value === null || (more && rawBusy.value)) return
+  const ticket=++rawEpoch,entryTicket=entryEpoch
+  const current=()=>ticket===rawEpoch && entryTicket===entryEpoch
   rawBusy.value = true; error.value = ''
   try {
     const page = await getJson<TextPage>(`/api/memory-v2/chronicle/entries/${encodeURIComponent(selectedEntry.value.entryId)}/raw/${ordinal}`,
       {characterId: characterId.value, offset: more ? rawNext.value : 0,
         contentHash: more ? rawHash.value : null, limit: 4096})
+    if(!current())return
     rawOrdinal.value = ordinal
     rawText.value = more ? rawText.value + page.text : page.text
     rawNext.value = page.nextOffset; rawHash.value = page.contentHash ?? null
     rawRole.value = page.sourceRole ?? ''
-  } catch (exc) { rawText.value = ''; rawNext.value = null; failed(exc) }
-  finally { rawBusy.value = false }
+  } catch (exc) { if(!current())return;rawText.value = ''; rawNext.value = null; failed(exc) }
+  finally { if(ticket===rawEpoch)rawBusy.value = false }
 }
+
+const moreTextButton=ref<HTMLButtonElement|null>(null)
+watch(moreTextButton,(element,_,cleanup)=>{
+  if(!element || typeof IntersectionObserver==='undefined')return
+  const observer=new IntersectionObserver(entries=>{
+    if(entries.some(entry=>entry.isIntersecting) && !viewBusy.value && viewNext.value!==null)void loadView(true)
+  })
+  observer.observe(element);cleanup(()=>observer.disconnect())
+},{flush:'post'})
 
 function navigate(delta: number) {
   const next = navIds.value[currentIndex.value + delta]
@@ -592,7 +632,7 @@ async function previewProjection() {
 onMounted(async () => {
   try {
     const response = await getJson<{authenticated: boolean}>('/api/auth/status')
-    authenticated.value = response.authenticated
+    authenticated.value = response.authenticated;authReady.value=true
     if (authenticated.value) await initialize()
   } catch (exc) { failed(exc) } finally { authReady.value = true }
 })
@@ -617,7 +657,7 @@ onMounted(async () => {
         <div class="chronicle-brand"><span class="chronicle-logo"><Layers3 :size="24"/></span><div><small>YOSAKI / MEMORY V2</small><strong>溯时流源 <em>Chronicle</em></strong></div></div>
         <div class="chronicle-head-actions">
           <span class="chronicle-isolation"><ShieldCheck :size="14" /> Chronicle 记忆</span>
-          <button class="text-button" :aria-label="showImport ? '关闭对话导入' : '打开对话导入'" @click="showImport = !showImport"><FileText :size="17" /> 导入与分段阅读</button>
+          <button class="text-button" :aria-label="showImport ? '关闭对话导入' : '打开对话导入'" @click="toggleImport"><FileText :size="17" /> 导入与分段阅读</button>
           <select :value="characterId" aria-label="选择角色" @change="changeRole"><option v-for="person in characters" :key="person.id" :value="person.id">{{ person.name }}</option></select>
           <button class="icon-btn" aria-label="切换明暗模式" @click="toggleTheme"><Sun v-if="theme === 'dark'" :size="17" /><Moon v-else :size="17" /></button>
           <button class="icon-btn" aria-label="刷新年历" @click="refreshAll"><RefreshCw :size="17" /></button>
@@ -670,11 +710,11 @@ onMounted(async () => {
         </aside>
         <section class="chronicle-main">
           <div class="chronicle-page-kicker"><CalendarDays :size="16" /> {{ currentCharacter?.name || '角色' }}的记忆年历 <span>·</span> {{ asOf.slice(0,10) }} 视角</div>
-          <ChronicleImportWizard :key="characterId ?? 0" v-if="showImport && characterId !== null" :character-id="characterId" />
-          <ChronicleBatchReview v-if="characterId" :key="characterId" :cid="characterId" :dirty="!!editorRef?.dirty" @published="if(!editorRef?.dirty)editorId=null;refreshAll();loadProgressiveDrafts()" />
-          <details class="projection-diagnostics"><summary>待补齐的经历草稿</summary>
+          <ChronicleImportWizard ref="importRef" :review-busy="reviewPanel?.busy" @review="openBatchReview" @revised="revised" @changed="draftsChanged" :key="characterId ?? 0" v-if="showImport && characterId !== null" :character-id="characterId" />
+          <ChronicleBatchReview id="chronicle-review" ref="reviewPanel" v-if="characterId" :key="characterId" :cid="characterId" :changes="reviewChanges" :revision="reviewRevision" :dirty="!!editorRef?.dirty || !!importRef?.dirty" @published="if(!editorRef?.dirty)editorId=null;refreshAll();loadProgressiveDrafts()" />
+          <details :key="characterId ?? 0" class="projection-diagnostics" @toggle="($event.currentTarget as HTMLDetailsElement).open && loadProgressiveDrafts()"><summary>待补齐的经历草稿</summary>
             <p>仅用于整理与查看；待审字段不会进入记忆投影。</p>
-            <button class="text-button" :disabled="draftBusy" @click="loadProgressiveDrafts()">{{ draftBusy ? '正在校验来源…' : '读取草稿' }}</button>
+            <button class="text-button" :disabled="draftBusy" @click="loadProgressiveDrafts()">{{ draftBusy ? '正在校验来源…' : '刷新草稿' }}</button>
             <p v-if="draftError">{{ draftError }}</p>
             <template v-if="draftCharacterId === characterId">
               <article v-for="draft in progressiveDrafts" :key="draft.entryId">
@@ -685,7 +725,7 @@ onMounted(async () => {
               <button v-if="draftNext !== null" class="text-button" :disabled="draftBusy" @click="loadProgressiveDrafts(true)">下一页草稿</button>
             </template>
           </details>
-          <ChronicleEditor v-if="editorId && characterId" ref="editorRef" :key="editorId" :character-id="characterId" :entry-id="editorId" @saved="loadProgressiveDrafts();refreshAll()" />
+          <ChronicleEditor v-if="editorId && characterId" ref="editorRef" :key="editorId" :character-id="characterId" :entry-id="editorId" @saved="draftsChanged" @revised="revised" />
           <ChroniclePeriodSummaries @open-entry="openEntry" v-if="characterId" :key="characterId" :cid="characterId" :period="activeNode?.period" :revision="asOf" />
           <div v-if="activeNode" class="period-card">
             <div class="period-heading"><div><div class="period-crumbs"><button v-if="nodeTrail.length" @click="upNode"><ArrowLeft :size="14" /> 上一级</button><span v-else>当前时间层级</span><ChevronRight :size="13" /> {{ activeNode.level || '未定' }}</div><h1>{{ activeNode.title }}</h1><p>{{ activeNode.level ? `${levelNames[activeNode.level]} · ${periodLabel(activeNode)}` : '发生时间未核实' }} · {{ activeNode.memberCount }} 条经历</p></div><span class="period-level">{{ activeNode.level || '时间未定' }}</span></div>
@@ -708,7 +748,7 @@ onMounted(async () => {
             <p v-if="navIds.length" class="projection-note">当前第 {{currentIndex >= 0 ? currentIndex+1 : '—'}} / {{navIds.length}} 条<template v-if="!canPrevious"> · 没有上一条</template><template v-if="!canNext"> · 没有下一条</template>。</p>
             <div class="view-header"><div class="view-tabs"><button v-for="view in (['NARRATIVE','CLEANED','RAW'] as const)" :key="view" :class="{active: activeView === view}" :disabled="selectedEntry.views[view].status !== 'available'" @click="chooseView(view)">{{ {NARRATIVE:'精修后的对话记录',RAW:'查看原始对话',CLEANED:'旧清理视图'}[view] }}<small v-if="selectedEntry.views[view].status !== 'available'">{{ selectedEntry.views[view].status === 'needs_review' ? '待审核' : '不可用' }}</small></button></div><span>有序来源 {{ selectedEntry.sourceRefs.length }} 条 · {{ selectedEntry.timeBasis === 'occurred' ? '发生时间' : '时间待核实' }}</span></div>
             <div class="compare-grid" :class="{'raw-only': activeView === 'RAW'}">
-              <section v-if="activeView !== 'RAW'" class="compare-pane"><div class="compare-pane-title"><FileText :size="15" /> {{ activeView === 'NARRATIVE' ? '精修后的对话记录' : '保守清理正文' }} <small>已审核派生</small></div><div class="reading-text">{{ viewText }}</div><button v-if="viewNext !== null" class="text-button" :disabled="viewBusy" @click="loadView(true)">{{viewBusy ? '正在读取…' : '继续读取'}} <ChevronDown :size="13" /></button></section>
+              <section v-if="activeView !== 'RAW'" class="compare-pane"><div class="compare-pane-title"><FileText :size="15" /> {{ activeView === 'NARRATIVE' ? '精修后的对话记录' : '保守清理正文' }} <small>已审核派生</small></div><div class="reading-text">{{ viewText }}</div><button ref="moreTextButton" :key="viewNext" v-if="viewNext !== null" class="text-button" :disabled="viewBusy" @click="loadView(true)">{{viewBusy ? '正在读取…' : '继续读取'}} <ChevronDown :size="13" /></button></section>
               <section v-if="activeView === 'RAW'" class="compare-pane raw-pane"><div class="compare-pane-title"><BookOpen :size="15" /> RAW 原始证据 <small>权威来源 · 第 {{ rawOrdinal + 1 }} / {{ selectedEntry.sourceRefs.length }} 条</small></div><div class="source-switch"><button v-for="(source, index) in selectedEntry.sourceRefs" :key="`${source.kind}-${source.id}`" :class="{active: rawOrdinal === index}" @click="loadRaw(index)">{{ index + 1 }} · {{ source.kind === 'message' ? '消息' : '活动操作' }}</button></div><div class="source-meta">{{ rawRole === 'assistant' ? '阿夜的模型发言' : rawRole === 'user' ? '用户发言' : '活动证据' }} · {{ selectedEntry.sourceRefs[rawOrdinal]?.kind }}:{{ selectedEntry.sourceRefs[rawOrdinal]?.id }}</div><div class="reading-text">{{ rawText }}</div><button v-if="rawNext !== null" class="text-button" :disabled="rawBusy" @click="loadRaw(rawOrdinal, true)">{{rawBusy ? '正在读取…' : '继续读取原始对话'}} <ChevronDown :size="13" /></button></section>
             </div>
           </article>
