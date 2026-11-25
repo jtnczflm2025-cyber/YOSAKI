@@ -100,7 +100,7 @@ const previewMaxBlocks = ref(5)
 const previewBusy = ref(false)
 const previewResult = ref<ProjectionResult | null>(null)
 const previewError = ref('')
-const showImport = ref(false)
+const showImport = ref(new URLSearchParams(location.search).has('batch'))
 
 const levelNames: Record<string, string> = {L0: '当日纪事', L1: '周记', L2: '月记', L3: '季度', L4: '半年', L5: '年度'}
 const summaryNames: Record<string, string> = {available: '已审核摘要', missing: '独立审核版尚未生成', stale_or_unreviewed: '待审核或已失效', child_digest_missing: '独立审核版等待下级摘要', not_applicable: '详细条目'}
@@ -617,7 +617,7 @@ onMounted(async () => {
         <div class="chronicle-brand"><span class="chronicle-logo"><Layers3 :size="24"/></span><div><small>YOSAKI / MEMORY V2</small><strong>溯时流源 <em>Chronicle</em></strong></div></div>
         <div class="chronicle-head-actions">
           <span class="chronicle-isolation"><ShieldCheck :size="14" /> Chronicle 记忆</span>
-          <button class="icon-btn" :aria-label="showImport ? '关闭对话导入' : '打开对话导入'" @click="showImport = !showImport"><FileText :size="17" /></button>
+          <button class="text-button" :aria-label="showImport ? '关闭对话导入' : '打开对话导入'" @click="showImport = !showImport"><FileText :size="17" /> 导入与分段阅读</button>
           <select :value="characterId" aria-label="选择角色" @change="changeRole"><option v-for="person in characters" :key="person.id" :value="person.id">{{ person.name }}</option></select>
           <button class="icon-btn" aria-label="切换明暗模式" @click="toggleTheme"><Sun v-if="theme === 'dark'" :size="17" /><Moon v-else :size="17" /></button>
           <button class="icon-btn" aria-label="刷新年历" @click="refreshAll"><RefreshCw :size="17" /></button>
@@ -670,7 +670,7 @@ onMounted(async () => {
         </aside>
         <section class="chronicle-main">
           <div class="chronicle-page-kicker"><CalendarDays :size="16" /> {{ currentCharacter?.name || '角色' }}的记忆年历 <span>·</span> {{ asOf.slice(0,10) }} 视角</div>
-          <ChronicleImportWizard v-if="showImport && characterId !== null" :character-id="characterId" />
+          <ChronicleImportWizard :key="characterId ?? 0" v-if="showImport && characterId !== null" :character-id="characterId" />
           <ChronicleBatchReview v-if="characterId" :key="characterId" :cid="characterId" :dirty="!!editorRef?.dirty" @published="if(!editorRef?.dirty)editorId=null;refreshAll();loadProgressiveDrafts()" />
           <details class="projection-diagnostics"><summary>待补齐的经历草稿</summary>
             <p>仅用于整理与查看；待审字段不会进入记忆投影。</p>

@@ -81,7 +81,7 @@ def _create_record(db, character_id, target_kind, target_id, fields, read_set, *
         if execution_kind not in ('local_categories_v1', 'local_tags_v1', 'local_keywords_v1',
                                   'mock_synopsis_v1', 'responses_synopsis_v1', 'mock_narrative_v1',
                                   'mock_temporal_digest_v1', 'chronicle_embedding_v1',
-                                  'chronicle_semantic_supplement_v1','responses_temporal_digest_v1','chronicle_calendar_synopsis_v1'):
+                                  'chronicle_semantic_supplement_v1','responses_temporal_digest_v1','chronicle_calendar_synopsis_v1','chronicle-import-plan-synopsis-v1'):
             raise ValueError('invalid_execution_kind')
         payload['executionKind'] = execution_kind
     fingerprint = _hash(['a3-job-v1', character_id, payload])

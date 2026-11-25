@@ -38,7 +38,7 @@ def reconcile_period_plans(db, cid, owner_id, *, now):
     return temporal.maintenance_plan(db, cid, now=now), retired
 
 
-def prepare_entry(connect, cid, owner_id, eid):
+def prepare_entry(connect, cid, owner_id, eid, *, missing_only=False):
     """Finish local draft preparation before an import opens its editor."""
     try:
         diagnostics=[]
@@ -53,6 +53,12 @@ def prepare_entry(connect, cid, owner_id, eid):
                     if published:
                         diagnostics.append({'field':name,'status':'published_version_preserved'})
                         continue
+                    if missing_only:
+                        current=metadata.read_draft(db,eid,cid)
+                        field={'category':'categories','tag':'tags','keyword':'keywords'}[name]
+                        if current['fields'][field].get('fieldId'):
+                            diagnostics.append({'field':name,'status':'existing_field_preserved'})
+                            continue
                     if name=='keyword':
                         # Automatic upkeep initializes missing fields only.
                         # Never bulk-rewrite existing historical candidates.

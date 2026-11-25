@@ -668,6 +668,15 @@ def install(app, connect, authenticate, *, allowed_origins=(), provider_factory=
                 for s in db.execute('SELECT * FROM mv2_import_segments WHERE file_id=? ORDER BY ordinal',(file_id,))]
             return {'sourceSnapshot':snapshot,'messageCount':len(records),'segments':segments}
 
+    @router.post('/imports/{batch_id}/{file_id}/reading-drafts')
+    def reading_drafts(batch_id: str, file_id: str, characterId: int, user=Depends(identity)):
+        from . import memory_v2_import_reading
+        try:
+            with connect() as db:
+                return memory_v2_import_reading.create(db,batch_id,file_id,characterId,user['id'])
+        except ValueError as exc:
+            raise HTTPException(409,str(exc)) from None
+
     @router.post('/imports/{batch_id}/{file_id}/boundaries')
     def confirm_boundaries(batch_id: str, file_id: str, p: Boundary, user=Depends(identity)):
         from . import memory_v2_import as importer
@@ -915,6 +924,13 @@ def install(app, connect, authenticate, *, allowed_origins=(), provider_factory=
         with connect() as db:
             owners=[r[0] for r in db.execute('SELECT id FROM users')]
         if len(owners)==1: await run_in_threadpool(resume_local,owners[0])
+        import asyncio
+        from . import memory_v2_import_processing as imports
+        with connect() as db:
+            pending=[r[0] for r in db.execute("SELECT id FROM mv3_jobs WHERE kind=? AND status IN ('queued','running') ORDER BY created_at",(imports.BATCH,))]
+        async def resume_imports():
+            for batch in pending:await imports.run(connect,batch)
+        if pending:app.state.import_recovery=asyncio.create_task(resume_imports())
     app.add_event_handler('startup',recover_on_start)
     if calendar_sync is not None:
         app.add_event_handler('startup',calendar_sync.start)

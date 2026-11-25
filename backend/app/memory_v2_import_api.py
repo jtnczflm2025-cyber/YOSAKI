@@ -3,7 +3,7 @@
 import hashlib
 import json
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -67,18 +67,43 @@ def install(app, connect, authenticate, *, allowed_origins=()):
                          "previewFingerprint": batch_preview_fingerprint(previews)})
 
     @router.post("/batches")
-    async def prepare(characterId: int = Form(...), files: list[UploadFile] = File(...),
+    async def prepare(request: Request, tasks: BackgroundTasks, characterId: int = Form(...), files: list[UploadFile] = File(...),
+                      withPlanSynopsis: bool = Form(False),
                       confirmedOffsetMinutes: int | None = Form(None),
                       expectedPreviewFingerprint: str | None = Form(None)):
         bodies = await uploads(files)
         with connect() as db:
-            return response(importer.prepare(db, characterId, bodies, confirmedOffsetMinutes,
-                                             expectedPreviewFingerprint))
+            user=authenticate(request) if withPlanSynopsis else None
+            result=importer.prepare(db, characterId, bodies, confirmedOffsetMinutes,
+                                    expectedPreviewFingerprint,plan_owner=user['id'] if user else None)
+        if withPlanSynopsis:
+            from .memory_v2_import_processing import run
+            tasks.add_task(run,connect,result['batchId'])
+        return response(result)
+
+    @router.post("/batches/{batch_id}/prepare-review")
+    def prepare_review(batch_id: str, characterId: int, request: Request, tasks: BackgroundTasks, onlyUnsent: bool=False):
+        from . import memory_v2_import_processing as pipeline
+        with connect() as db:
+            user=authenticate(request)
+            if not user:raise HTTPException(401,"需要登录")
+            if importer._batch(db,batch_id,characterId)['status']!='raw_complete':
+                raise HTTPException(409,"请先完成原文归档")
+            if onlyUnsent:
+                pipeline.continue_unsent(db,batch_id,characterId,user['id'])
+            else:
+                pipeline.grant(db,batch_id,characterId,user['id'])
+        tasks.add_task(pipeline.run,connect,batch_id)
+        return response({'batchId':batch_id})
 
     @router.get("/batches/{batch_id}")
     def batch_status(batch_id: str, characterId: int):
         with connect() as db:
-            return response(importer.status(db, batch_id, characterId))
+            result=importer.status(db, batch_id, characterId)
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='mv3_jobs'").fetchone():
+                from .memory_v2_import_processing import progress
+                result['processing']=progress(db,batch_id,characterId)
+            return response(result)
 
     @router.get("/batches")
     def batches(characterId: int):
@@ -135,10 +160,14 @@ def install(app, connect, authenticate, *, allowed_origins=()):
             return response({"entries": importer.create_draft_entries(db, batch_id, characterId)})
 
     @router.post("/index/start")
-    def index_start(characterId: int):
+    def index_start(characterId: int, reuseRunning: bool = False):
         with connect() as db:
             db.execute('BEGIN IMMEDIATE')
             importer.list_batches(db, characterId)
+            if reuseRunning:
+                active = db.execute("SELECT * FROM mv2_jobs WHERE character_id=? AND status='running'", (characterId,)).fetchone()
+                if active:
+                    return response(dict(active))
             try:
                 meta = db.execute('SELECT state FROM mv2_meta WHERE character_id=?', (characterId,)).fetchone()
                 mode = 'incremental' if meta and meta['state'] == 'ready' else 'rebuild'

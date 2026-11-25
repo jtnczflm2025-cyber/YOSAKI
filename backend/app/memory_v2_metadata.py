@@ -325,11 +325,14 @@ def read_draft(db, entry_id, character_id, *, offset_minutes=480):
                         field['rule_version'] == final.PROFILE_V3
                         else synopsis._batch_validator(field['rule_version']))):
                 state = 'stale'
-        if name=='synopsis' and field['rule_version'] in ('synopsis-full-entry-responses-chronicle-quotes-v4','synopsis-full-entry-responses-chronicle-quotes-v4-stream-v1','synopsis-full-entry-responses-chronicle-quotes-v4-stream-8192-v2'):
+        import_plan = name=='synopsis' and field['rule_version'].startswith('chronicle-import-plan-synopsis-')
+        if import_plan or (name=='synopsis' and field['rule_version'] in ('synopsis-full-entry-responses-chronicle-quotes-v4','synopsis-full-entry-responses-chronicle-quotes-v4-stream-v1','synopsis-full-entry-responses-chronicle-quotes-v4-stream-8192-v2')):
             from . import memory_v2_synopsis_quotes as quotes
             from . import memory_v2_synopsis as synopsis
             try:
                 evidence=json.loads(field['evidence_json'])[0]
+                if import_plan and (field['rule_version']!='chronicle-import-plan-synopsis-v1' or field['provenance']!='model'):
+                    raise ValueError('import_profile_changed')
                 if field['rule_version']==synopsis.REAL_STREAM_8192_PROFILE and (deps.get('synopsisCapacityVersion')!=synopsis.STREAM_8192_CAPACITY_VERSION or evidence.get('capacityVersion')!=synopsis.STREAM_8192_CAPACITY_VERSION):
                     raise ValueError('capacity_version_changed')
                 sources=[]
@@ -338,7 +341,7 @@ def read_draft(db, entry_id, character_id, *, offset_minutes=480):
                     if live is None: raise ValueError('source_changed')
                     sources.append(dict(kind=live.kind,id=live.source_id,speaker=live.role,text=live.text,sourceStatus=live.status))
                 checked={'text':value,'units':evidence['units'],'sourceCoverage':evidence['sourceCoverage']}
-                if deps.get('synopsisQuoteLocator')!=quotes.VERSION:raise ValueError('quote_version_changed')
+                if not import_plan and deps.get('synopsisQuoteLocator')!=quotes.VERSION:raise ValueError('quote_version_changed')
                 quotes.checked_artifact(checked,evidence['quoteLocalization'],sources)
                 synopsis.validate_output(checked,sources,qualifier_policy=synopsis.CHRONICLE_REVIEW_POLICY)
                 synopsis.validate_speaker_anchors(checked)
