@@ -30,7 +30,11 @@ async function load(reset=false){
   if(!rows.value.some(x=>x.period===key.value)){
    key.value=rows.value.find(x=>x.period===props.period)?.period||rows.value.find(x=>x.status!=='outside_initial_scope')?.period||rows.value[0]?.period||''
   }
-  if(enabled.value&&!error.value&&rows.value.some(x=>['waiting','queued','running','unknown'].includes(x.status)))timer=setTimeout(()=>load(),10000)
+  const deadlines=[check.value?.nextCheck,budget.value?.endsAt]
+    .map(value=>value?Date.parse(value)-Date.now():NaN).filter(ms=>Number.isFinite(ms)&&ms>0)
+  const inProgress=enabled.value&&!error.value&&rows.value.some(x=>['waiting','queued','running','unknown'].includes(x.status))
+  const delay=Math.min(inProgress?10000:300000,...deadlines)
+  timer=setTimeout(()=>{if(!document.hidden)void load()},Math.max(delay+100,1000))
  }catch(e){if(n===seq){received.value=false;rows.value=[];error.value=(e instanceof Error?e.message:'读取周期摘要失败')+'。恢复连接后可重新读取。'}}
 }
 async function change(kind:'authorize'|'revoke'){
