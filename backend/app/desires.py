@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
 from .autonomy import ControlInput
+from .owner_billing import metered
 
 router = APIRouter(prefix="/api/desires")
 
@@ -622,7 +623,7 @@ def install(app, connect, now, model_url, auth_headers, mcp_request, validate_to
                 raise HTTPException(409, "自由活动由后端自动推进")
             if item["character_id"] != character_id or item["status"] != "ready":
                 raise HTTPException(409, "当前会话不能继续思考")
-            if item["model_calls"] >= item["max_model_calls"]:
+            if not metered() and item["model_calls"] >= item["max_model_calls"]:
                 db.execute("UPDATE awakening_sessions SET status='completed',ended_at=? WHERE id=?", (stamp(), session_id))
                 return session(db, session_id)
             profile = db.execute("SELECT * FROM model_profiles WHERE id=? AND enabled=1", (item["model_profile_id"],)).fetchone()

@@ -118,7 +118,7 @@ class Search:
         bound = {'request': str(self.params.requestId), 'queryHash': core._hash(self.query),
                  'filters': self.fields, 'phase': phase,
                  'realConfig': {'ownerId': self.owner, 'modelId': self.params.modelId,
-                                'approvedMicrousd': BUDGET}, **extra}
+                                **({'billingMode': 'metered'} if metered() else {'approvedMicrousd': BUDGET})}, **extra}
         if hasattr(self.params, 'chatWaitSeconds'):
             seconds = self.params.chatWaitSeconds
             if type(seconds) is not int or seconds not in CHAT_WAIT_OPTIONS:
@@ -302,7 +302,7 @@ class Search:
 
     def run(self, provider_factory, embedding_factory):
         cap = len(self.query.encode('utf-8'))
-        if not 1 <= cap <= QUERY_BYTES or self.params.approveMaxMicrousd != BUDGET:
+        if not 1 <= cap <= QUERY_BYTES or (not metered() and self.params.approveMaxMicrousd != BUDGET):
             raise ValueError('semantic_approval_required')
         self.check_session()
         with self.connect() as db:

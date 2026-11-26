@@ -26,11 +26,11 @@ function applyKeywordSuggestions(){
 }
 type FeedbackArea='text'|'narrative'|'synopsis'|'labels'|'review'|'publish'|'date'|'curation'
 const feedbackArea=ref<FeedbackArea>('text')
-const generationEnabled=ref(false), generationModel=ref(0), models=ref<{id:number;name:string}[]>([])
+const meteredBilling=ref(false), generationEnabled=ref(false), generationModel=ref(0), models=ref<{id:number;name:string}[]>([])
 const outputTokens=ref(6144), generationMaterial=ref<any>(null), activeGeneration=ref('')
 const synopsisTaskStatus=ref<any>(null)
 const generationCap=computed(()=>outputTokens.value===8192 ? 147456 : 122880)
-onMounted(async()=>{ try {generationEnabled.value=(await request('/api/memory-v2/workspace/generation-status')).enabled;const all=await request('/api/models');models.value=(Array.isArray(all)?all:all.items||[]).filter((m:any)=>m.enabled&&m.protocol==='openai_responses'&&m.model_name==='gpt-6.1-sol');generationModel.value=models.value[0]?.id||0} catch {generationEnabled.value=false} })
+onMounted(async()=>{ try {const status=await request('/api/memory-v2/workspace/generation-status');generationEnabled.value=status.enabled;meteredBilling.value=Boolean(status.metered);const all=await request('/api/models');models.value=(Array.isArray(all)?all:all.items||[]).filter((m:any)=>m.enabled&&m.protocol==='openai_responses'&&m.model_name==='gpt-6.1-sol');generationModel.value=models.value[0]?.id||0} catch {generationEnabled.value=false} })
 const confirmation = ref('')
 let resolveConfirmation: ((answer:boolean)=>void)|null=null
 function askConfirmation(text:string):Promise<boolean> {
@@ -176,7 +176,7 @@ async function generateSynopsis() {
   try {generationMaterial.value=await request(`${url()}/synopsis-material?characterId=${props.characterId}&outputTokens=${outputTokens.value}`)}
   catch(e){error.value=(e as Error).message;return}
   const material=generationMaterial.value, modelName=models.value.find(m=>m.id===generationModel.value)?.name || ''
-  if(!await askConfirmation(`发送本条完整的 ${material.sourceCount} 条原始对话及必要来源标识（当前来源包装 ${material.inputCharacters} 字符，不含其余指令与Schema），账户档案：${modelName}，模型 gpt-6.1-sol Standard／medium，store:false。最多一次计数＋一次流式生成；输入最多8192 token，总输出最多${outputTokens.value} token（含推理），梗概正文仍最多3000字符。费用硬上限 USD ${(generationCap.value/1000000).toFixed(6)}；不重试，不确认或发布。是否批准本次材料外发和费用？`)) return
+  if(!await askConfirmation(`发送本条完整的 ${material.sourceCount} 条原始对话及必要来源标识（当前来源包装 ${material.inputCharacters} 字符，不含其余指令与Schema），账户档案：${modelName}，模型 gpt-6.1-sol Standard／medium，store:false。最多一次计数＋一次流式生成；输入最多8192 token，总输出最多${outputTokens.value} token（含推理），梗概正文仍最多3000字符。${meteredBilling.value?'按实际用量计费':'费用硬上限 USD '+(generationCap.value/1000000).toFixed(6)}。是否允许发送本条原始对话？`)) return
   await act(async()=>{
     const p=await request(`${url()}/synopsis-plan`,'POST',{characterId:props.characterId,expectedVersion:record.value!.entry.versionId,modelId:generationModel.value,approveMaxMicrousd:generationCap.value,generationVersion:'stream-v4',outputTokens:outputTokens.value,materialHash:material.scopeHash})
     activeGeneration.value=p.jobId
@@ -309,7 +309,7 @@ defineExpose({dirty:hasUnsaved})
         <label v-if="editing">梗概正文<textarea v-model="synopsis" @input="dirty=true" rows="7" maxlength="3000" :disabled="busy" placeholder="梗概尚未生成，可先保留为空。" /></label>
         <div v-else class="source-reading">{{synopsis || '梗概尚未生成。'}}</div>
         <details class="editor-disclosure"><summary>生成待审梗概与任务状态</summary><div class="disclosure-content">
-          <template v-if="generationEnabled"><div class="generation-options"><label>梗概生成模型<select v-model="generationModel" :disabled="busy"><option v-for="m in models" :key="m.id" :value="m.id">{{m.name}}</option></select></label><label>梗概输出容量<select v-model.number="outputTokens" :disabled="busy"><option :value="6144">6144 总输出token · 最高USD0.122880</option><option :value="8192">8192 总输出token · 最高USD0.147456</option></select></label></div><p class="editor-help">发送本条完整原始对话，由程序唯一定位引文；总输出含推理，正文仍限3000字符。每次先展示材料，由您授权；不自动重试。</p><button class="c-primary" :disabled="busy || hasUnsaved || !generationModel" @click="generateSynopsis">生成待审梗概</button><p v-if="!generationModel" class="editor-help">尚无符合要求的生成模型档案。</p></template>
+          <template v-if="generationEnabled"><div class="generation-options"><label>梗概生成模型<select v-model="generationModel" :disabled="busy"><option v-for="m in models" :key="m.id" :value="m.id">{{m.name}}</option></select></label><label>梗概输出容量<select v-model.number="outputTokens" :disabled="busy"><option :value="6144">6144 总输出token{{meteredBilling?'':' · 最高USD0.122880'}}</option><option :value="8192">8192 总输出token{{meteredBilling?'':' · 最高USD0.147456'}}</option></select></label></div><p class="editor-help">发送本条完整原始对话，由程序唯一定位引文；总输出含推理，正文仍限3000字符。每次先展示材料，由您授权；不自动重试。</p><button class="c-primary" :disabled="busy || hasUnsaved || !generationModel" @click="generateSynopsis">生成待审梗概</button><p v-if="!generationModel" class="editor-help">尚无符合要求的生成模型档案。</p></template>
           <p v-else class="editor-help">模型加工尚未开启；完整精修与手动编辑可独立使用。</p>
           <button v-if="activeGeneration" @click="cancelGeneration">取消本次梗概生成</button>
 

@@ -43,7 +43,11 @@ class CalendarSync(unittest.TestCase):
 
     def test_metered_existing_scope_reuses_work_after_old_expiry(self):
         self.publish()
-        self.grant.update(endsAt=self.when.isoformat(), perTask=1, perDay=1, total=1)
+        self.grant.update(perTask=1, perDay=1, total=1)
+        self.path.write_text(json.dumps(self.grant))
+        self.service.refresh()
+        self.assertEqual(self.adapter.generate.call_count, 0)
+        self.grant.update(endsAt=self.when.isoformat())
         self.path.write_text(json.dumps(self.grant))
         with patch.dict("os.environ", {"YOSAKI_RUN_MODE": "development", "YOSAKI_OWNER_BILLING": "metered"}):
             grant = self.service.grant()

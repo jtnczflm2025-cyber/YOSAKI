@@ -269,7 +269,7 @@ class PeriodSync:
                                    body=body,members=[{'id':i[0],'title':m['title']} for i,m in items if m],reason=row['error_code'] if row else reason))
             matches=(grant.get('characterId'),grant.get('ownerId'))==(cid,owner)
             bounded=bool(matches and policy.valid(grant,self.clock()) and not grant.get('revoked'))
-            return dict(check=policy.read(self.check_path) if matches else {},bounded=bounded,
+            return dict(metered=policy.metered(),check=policy.read(self.check_path) if matches else {},bounded=bounded,
                         recall=bool(bounded and grant.get('recall')),
                         budget=({**{k:grant.get(k) for k in ('perTask','perDay','total','endsAt','billingMode')},
                                  **policy.balance(db,cid,grant,self.clock().date().isoformat())} if matches else {}),
@@ -327,6 +327,18 @@ class PeriodSync:
     def blocks_generation(self,db,cid,grant,period,fp):
         row=record(db,cid,period,fp)
         if not row:return False
+        if (policy.metered() and grant.get('billingMode') == 'metered' and
+                row['status'] == 'failed' and row['error_code'] == 'task_budget' and row['state'] is None):
+            # Only supersede a bounded predecessor proven to have stopped before dispatch.
+            predecessor = json.loads(row['read_set_json'])
+            if predecessor.get('grantTerms', {}).get('billingMode') != 'metered':
+                unsent = db.execute("""SELECT 1 FROM mv3_trial_budgets
+                    WHERE id=? AND character_id=? AND status='stopped' AND error_code='task_budget'
+                    AND dispatched_requests=0 AND reserved_microusd=0 AND spent_estimate_microusd=0
+                    AND NOT EXISTS(SELECT 1 FROM mv3_model_chunks WHERE job_id=?)""",
+                    (predecessor.get('realConfig', {}).get('trialId'), cid, row['id'])).fetchone()
+                if unsent:
+                    return False
         # An explicit new grant may reattempt a terminal, reliably known failure.
         # Pausing during the free count is reversible on resume (no generation identity exists).
         if row['status']=='failed' and row['state'] is None and row['error_code']=='input_changed':

@@ -5,7 +5,7 @@ type Period={period:string;level:string;count:number;ready:number;status:string;
 const emit=defineEmits<{(event:'open-entry',id:string):void}>()
 const props=defineProps<{cid:number;period?:string|null;revision:string}>()
 const rows=ref<Period[]>([]),key=ref(''),enabled=ref(false),busy=ref(false),error=ref(''),configured=ref(false)
-const bounded=ref(false), recall=ref(false), scopeFuture=ref(false), allowRecall=ref(false)
+const metered=ref(false), bounded=ref(false), recall=ref(false), scopeFuture=ref(false), allowRecall=ref(false)
 const check=ref<{lastCheck?:string;nextCheck?:string}>({})
 const budget=ref<{billingMode?:string;perTask?:number;perDay?:number;total?:number;spent?:number;reserved?:number;today?:number;endsAt?:string}>({})
 const days=ref(30), perTask=ref(0.15), perDay=ref(1), total=ref(10)
@@ -25,7 +25,7 @@ async function load(reset=false){
   const r=await fetch('/api/memory-v2/workspace/calendar-summaries?characterId='+props.cid,{cache:'no-store'})
   if(!r.ok)throw Error('读取周期摘要失败（'+r.status+'）')
   const data=await r.json();if(n!==seq)return
-  received.value=true;bounded.value=data.bounded;recall.value=data.recall;check.value=data.check;budget.value=data.budget
+  received.value=true;metered.value=Boolean(data.metered);bounded.value=data.bounded;recall.value=data.recall;check.value=data.check;budget.value=data.budget
   rows.value=data.periods;enabled.value=data.enabled;configured.value=data.configured
   error.value=data.error?'本次检查遇到问题：'+(reasons[data.error]||data.error):''
   if(!rows.value.some(x=>x.period===key.value)){
@@ -40,7 +40,7 @@ async function load(reset=false){
 }
 async function change(kind:'authorize'|'revoke'){
  if(busy.value)return
- const msg=kind==='revoke'?'撤销本角色的持续加工及自动摘要召回授权？':'批准在所列期限和预算内将所选范围的已确认标题、完整梗概和日期发送到 OpenAI？'
+ const msg=kind==='revoke'?'撤销本角色的持续加工及自动摘要召回授权？':'允许将所选范围的已确认标题、完整梗概和日期发送到 OpenAI？'
  if(!window.confirm(msg))return
  busy.value=true
  try{
@@ -82,14 +82,14 @@ onBeforeUnmount(()=>{seq++;clearTimeout(timer);document.removeEventListener('vis
 <p>自动摘要用于召回：{{recall?'已授权，按实际命中范围核验':'未授权'}}。展开仍只读取已确认的完整精修。</p>
 <p v-if="budget.billingMode==='metered'">持续按量加工 · 已估算 {{usd(budget.spent)}} · 预留 {{usd(budget.reserved)}}。可随时暂停或撤销。</p><template v-else-if="budget.perTask"><p>每篇 {{usd(budget.perTask)}}，每日 {{usd(budget.perDay)}}，总额 {{usd(budget.total)}}，到期 {{dateText(budget.endsAt)}}。</p><p>已估算 {{usd(budget.spent)}} · 预留 {{usd(budget.reserved)}} · 今日占用 {{usd(budget.today)}}（每日预算按 UTC）。</p></template>
 <form v-if="configured&&!bounded" @submit.prevent="change('authorize')">
-<p>授权范围为本角色当前符合条件的经历。供应商为 OpenAI Standard，模型 gpt-6.1-sol。填写金额的单位为 USD。</p>
-<label>有效天数 <input type="number" min="1" max="365" required v-model.number="days"></label>
+<p>授权范围为本角色当前符合条件的经历。供应商为 OpenAI Standard，模型 gpt-6.1-sol。{{metered?'按实际用量计费，可暂停或撤销。':'填写金额的单位为 USD。'}}</p>
+<template v-if="!metered"><label>有效天数 <input type="number" min="1" max="365" required v-model.number="days"></label>
 <label>每篇上限 <input type="number" min="0.000001" step="0.000001" required v-model.number="perTask"></label>
 <label>每日上限 <input type="number" min="0.000001" step="0.000001" required v-model.number="perDay"></label>
-<label>总预算 <input type="number" min="0.000001" step="0.000001" required v-model.number="total"></label>
+<label>总预算 <input type="number" min="0.000001" step="0.000001" required v-model.number="total"></label></template>
 <label><input type="checkbox" v-model="scopeFuture"> 同时允许今后新发布的合资格经历外发加工</label>
 <label><input type="checkbox" v-model="allowRecall"> 允许当前有效的模型周期摘要用于召回；仅当本次命中覆盖摘要全部成员时带入</label>
-<button type="submit" :disabled="busy">确认持续加工范围与预算</button></form>
+<button type="submit" :disabled="busy">{{metered?'确认加工材料范围':'确认持续加工范围与预算'}}</button></form>
 <button v-if="bounded" :disabled="busy" @click="change('revoke')">撤销加工与自动摘要召回授权</button>
 <button v-if="bounded" :disabled="busy" @click="toggle">{{enabled?'暂停自动统稿':'恢复自动统稿'}}</button></details>
 <button @click="load()">刷新周期摘要</button>

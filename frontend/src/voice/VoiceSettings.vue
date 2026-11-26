@@ -200,7 +200,7 @@ async function saveScribe() {
     <section v-if="scribeSettings || budgetSettings" class="daily-voice-overview" aria-label="已保存的语音设置">
       <h3>日常语音</h3>
       <p v-if="scribeSettings">麦克风{{scribeSettings.service_enabled && scribeSettings.enabled ? '已启用' : '未启用'}}<span v-if="scribeUsage?.metered"> · 按量使用</span><span v-else-if="scribeUsage"> · 今天最多还能录音 {{scribeUsage.available_attempts}} 次</span>。<button type="button" class="text-btn" @click="focusSection(recordingSection)">录音设置</button></p>
-      <p v-if="budgetSettings">朗读日上限 {{budgetSettings.effective_limits.jobs}} 次合成、{{budgetSettings.effective_limits.requests}} 次请求、{{budgetSettings.effective_limits.characters}} 字。<button type="button" class="text-btn" @click="focusSection(readingSection)">朗读额度设置</button></p>
+      <p v-if="budgetSettings && scribeUsage?.metered">自动朗读按实际用量计费。</p><p v-else-if="budgetSettings">朗读日上限 {{budgetSettings.effective_limits.jobs}} 次合成、{{budgetSettings.effective_limits.requests}} 次请求、{{budgetSettings.effective_limits.characters}} 字。<button type="button" class="text-btn" @click="focusSection(readingSection)">朗读额度设置</button></p>
     </section>
     <AIExpressionSettings />
     <h3>连续通话播放方式</h3>
@@ -236,7 +236,7 @@ async function saveScribe() {
       <button class="text-btn" :disabled="busy" @click="clearCache">清空此角色朗读缓存</button>
       <p v-if="profile">角色 ID：{{profile.character_id}}；档案状态：{{profile.active?'活动':'非活动'}}；revision：{{profile.revision}}</p>
       <p>音色克隆与训练在 ElevenLabs 官方平台完成；当前仅绑定 Voice ID。V1-B 已分项验证，空闲 TTD 仍未完成。</p>
-      <section v-if="budgetSettings" class="voice-section">
+      <section v-if="budgetSettings && !scribeUsage?.metered" class="voice-section">
         <h3 ref="readingSection" tabindex="-1">每日自动朗读额度</h3>
         <p>默认验收配置为每天 2 次合成任务、2 个请求、160 个送读字符。超过额度只暂停自动朗读，文字聊天和已有缓存不受影响。额度是调用量限制，不是费用上限。</p>
         <label>每天最多合成任务（0～{{budgetSettings.ceilings.jobs}}）<input v-model.number="budgetDraft.jobs" type="number" min="0" :max="budgetSettings.ceilings.jobs" step="1"/></label>
@@ -252,12 +252,12 @@ async function saveScribe() {
         <h3 ref="recordingSection" tabindex="-1">Scribe 麦克风草稿</h3>
         <p>默认关闭。只有点击“开始录音”才向 ElevenLabs 发送麦克风音频；转写只填入草稿，编辑并点击发送后才会聊天。取消会释放麦克风和连接，不自动重录或重连。</p>
         <label><input v-model="scribeEnabled" type="checkbox"/>允许我主动使用 Scribe 麦克风</label>
-        <label>每日最多录音次数（0～{{scribeSettings.maximum.attempts}}）<input v-model.number="scribeDraft.attempts" type="number" min="0" :max="scribeSettings.maximum.attempts" step="1"/></label>
+        <template v-if="!scribeUsage?.metered"><label>每日最多录音次数（0～{{scribeSettings.maximum.attempts}}）<input v-model.number="scribeDraft.attempts" type="number" min="0" :max="scribeSettings.maximum.attempts" step="1"/></label>
         <label>每日最多供应商连接（0～{{scribeSettings.maximum.connections}}）<input v-model.number="scribeDraft.connections" type="number" min="0" :max="scribeSettings.maximum.connections" step="1"/></label>
         <label>每日预留音频秒数（0～{{scribeSettings.maximum.audio_seconds}}）<input v-model.number="scribeDraft.audio_seconds" type="number" min="0" :max="scribeSettings.maximum.audio_seconds" step="1"/></label>
         <p>默认每天 1 次录音、1 条连接、{{scribeSettings.per_attempt_audio_seconds}} 秒预留音频。每次开始会预占完整 {{scribeSettings.per_attempt_audio_seconds}} 秒；可录音次数受次数、连接数和音频秒数中最先耗尽的一项限制，即使取消或结果未知也不返还。重新登录和刷新页面不重置；额度不是费用上限。</p>
         <p v-if="scribeDraftAvailable !== null">按当前填写的额度，每天最多可开始 {{scribeDraftAvailable}} 次录音；保存后才会生效。</p>
-        <p v-if="scribeUsage?.metered">今日已尝试发送 {{scribeUsage.used.actual_audio_seconds.toFixed(2)}} 秒。</p><p v-else-if="scribeUsage">今日剩余额度：{{scribeUsage.remaining.attempts}} 次尝试、{{scribeUsage.remaining.connections}} 条连接、{{scribeUsage.remaining.audio_seconds}} 秒预留音频。<strong>按每次预留 {{scribeUsage.per_attempt_audio_seconds}} 秒，当前最多还能录音 {{scribeUsage.available_attempts}} 次。</strong> 已尝试发送约 {{scribeUsage.used.actual_audio_seconds.toFixed(2)}} 秒，不能证明供应商全部收到。香港时间零点重置。</p>
+        </template><p v-if="scribeUsage?.metered">今日已尝试发送 {{scribeUsage.used.actual_audio_seconds.toFixed(2)}} 秒。</p><p v-else-if="scribeUsage">今日剩余额度：{{scribeUsage.remaining.attempts}} 次尝试、{{scribeUsage.remaining.connections}} 条连接、{{scribeUsage.remaining.audio_seconds}} 秒预留音频。<strong>按每次预留 {{scribeUsage.per_attempt_audio_seconds}} 秒，当前最多还能录音 {{scribeUsage.available_attempts}} 次。</strong> 已尝试发送约 {{scribeUsage.used.actual_audio_seconds.toFixed(2)}} 秒，不能证明供应商全部收到。香港时间零点重置。</p>
         <label v-if="scribeEnabled&&!scribeSettings.enabled"><input v-model="confirmScribeEnable" type="checkbox"/>我确认主动开启麦克风草稿功能；录音会发送给 ElevenLabs</label>
         <label v-if="scribeIncreases"><input v-model="confirmScribeIncrease" type="checkbox"/>我确认提高每日录音调用量，可能增加实际费用</label>
         <p v-if="scribeInputError" role="alert">{{scribeInputError}}</p>
