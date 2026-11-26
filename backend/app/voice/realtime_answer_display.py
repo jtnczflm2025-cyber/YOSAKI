@@ -131,6 +131,7 @@ class AnswerDisplayGate:
         self.decisions: list[tuple[str, DisplayResult]] = []
         self.optional_decisions: list[DisplayResult] = []
         self.malformed: DisplayResult | None = None
+        self.terminal_tools = []
 
     @staticmethod
     def _restricted(seen: bool, parsed: bool, reason: str,
@@ -182,6 +183,11 @@ class AnswerDisplayGate:
         elif kind == "response.completed":
             output = (event.get("response") or {}).get("output")
             if isinstance(output, list):
+                self.terminal_tools = [
+                    (item.get("call_id"), item.get("name"), item.get("arguments"))
+                    for item in output if isinstance(item, dict) and item.get("type") == "function_call"
+                ] if all(isinstance(item, dict) and item.get("type") in ("reasoning", "function_call")
+                         for item in output) else []
                 for item in output:
                     self._item(item)
                     if isinstance(item, dict) and item.get("type") == "message" and \
@@ -359,6 +365,15 @@ class AnswerDisplayGate:
                          decision_presence="present")
         self.decisions.append((item_id, result))
         return result
+
+    def matches_tool_proposal(self, calls: dict) -> bool:
+        """A textless completed turn may proceed only to ordinary tool validation."""
+        if (not calls or self.items or self.text_item_ids or self.malformed or self.decisions
+                or len(self.optional_decisions) > 1):
+            return False
+        actual = [(call["id"], call["function"]["name"], call["function"]["arguments"])
+                  for _, call in sorted(calls.items())]
+        return actual == self.terminal_tools and len({call[0] for call in actual}) == len(actual)
 
     def _item(self, item: Any) -> None:
         if not isinstance(item, dict) or item.get("type") != "message":

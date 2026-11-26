@@ -89,9 +89,10 @@ class AutoReadDisplayGate(unittest.TestCase):
     def post(self, body, *, auto_read=False):
         calls = []
 
+        replies=body if isinstance(body,list) else [body]
         def handler(request):
             calls.append(request)
-            return httpx.Response(200, content=body,
+            return httpx.Response(200, content=replies[len(calls)-1],
                                   headers={"content-type": "text/event-stream"})
 
         def mock_client(**kwargs):
@@ -105,7 +106,7 @@ class AutoReadDisplayGate(unittest.TestCase):
                 "message": "local only", "model": "fake plan",
                 "model_profile_id": self.profile_id,
                 "voice_auto_read_requested": auto_read})
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), len(replies))
         self.last_model_request = json.loads(calls[0].content)
         self.assertEqual(response.status_code, 200)
         return events_from(response)
@@ -142,6 +143,20 @@ class AutoReadDisplayGate(unittest.TestCase):
         self.assertNotIn("max_output_tokens", self.last_model_request)
         self.post(wire(), auto_read=False)
         self.assertNotIn("max_output_tokens", self.last_model_request)
+
+    def test_textless_search_requires_matching_terminal_then_answers_without_click(self):
+        item = {"type":"function_call","call_id":"test-search","name":"yosaki_chronicle_search",
+                "arguments":'{"query":"synthetic"}'}
+        added = frame({"type":"response.output_item.added","output_index":0,"item":item})
+        with patch.dict(os.environ, {"YOSAKI_CHRONICLE_CONTEXT":"1"}):
+            for terminal, expected in ((dict(item,arguments="{}"), "error"), (item, "message_complete")):
+                body=added + frame({"type":"response.completed","response":{"output":[terminal]}})
+                events = self.post(body if expected=="error" else [body,wire()])
+                names = [name for name, _ in events]
+                self.assertIn(expected, names)
+                self.assertNotIn("tool_waiting_confirmation",names)
+                if expected=="error":self.assertNotIn("text_delta",names)
+                else:self.assertIn("memory_lookup",names)
 
 
 if __name__ == "__main__":

@@ -97,14 +97,27 @@ def sources_current(db,attempt,manifest):
         from . import memory_authority
         manual,approved=memory_authority.eligible_rows(db,character)
         qualified=[*manual,*[r for r,_ in approved if not chat_history.scope(db,cid)]]
+        chronicle_refs = [ref for ref in manifest['memory_refs'] if str(ref['id']).startswith('chronicle:')]
+        if chronicle_refs:
+            from . import memory_v2_chronicle_channel as channel
+            selected = [item['entryId'] for item in manifest.get('channels', [])
+                        if item.get('channel') == 'chronicle_entry' and item.get('entryId')]
+            if not selected:
+                selected = list(dict.fromkeys(eid for ref in chronicle_refs
+                                              for eid in ref['id'][10:].split(',')))
+            with chat_history.reading(db,cid):
+                owner = db.execute('SELECT id FROM users LIMIT 1').fetchone()
+                try:
+                    blocks = channel.project(db,character,owner[0] if owner else None,selected)['blocks']
+                except (ValueError,TypeError):
+                    return False
+            current_blocks = {('chronicle:' + ','.join(block['entryIds']), chat_history.digest(block['text']))
+                              for block in blocks}
+            if any((ref['id'],ref['sha256']) not in current_blocks for ref in chronicle_refs):
+                return False
         for ref in manifest['memory_refs']:
             if str(ref['id']).startswith('chronicle:'):
-                from . import memory_v2_chronicle_channel as channel
-                with chat_history.reading(db,cid):
-                    owner=db.execute('SELECT id FROM users LIMIT 1').fetchone()
-                    try:blocks=channel.project(db,character,owner[0] if owner else None,str(ref['id'])[10:].split(','))['blocks']
-                    except (ValueError,TypeError):return False
-                    if not any(chat_history.digest(block['text'])==ref['sha256'] for block in blocks):return False
+                continue
             else:
                 row=next((r for r in qualified if r['id']==ref['id']),None)
                 if not row or chat_history.digest(row['content'])!=ref['sha256'] or not chat_history.memory_allowed(db,row,cid):return False

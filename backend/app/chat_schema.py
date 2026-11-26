@@ -1,6 +1,9 @@
 """Additive chat schema. Installed only by the application's explicit initializer."""
 
 DDL = (
+    """CREATE TABLE IF NOT EXISTS chat_memory_lookup_preferences (
+        character_id INTEGER PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
+        paid_enabled INTEGER NOT NULL DEFAULT 0)""",
     """CREATE TABLE IF NOT EXISTS chat_path_exclusions (
         conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
         message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,

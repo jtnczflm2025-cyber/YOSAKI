@@ -126,6 +126,7 @@ const model = ref('YOSAKI · demo')
 const modelProfileId = ref<number | null>(null)
 const modelProfiles = ref<ModelProfile[]>([])
 const chronicleChatCap = ref(0)
+const memoryLookupProgress = ref("")
 const chronicleChatConsent = ref(false)
 const chronicleChatWaitSeconds = ref<12 | 30>(12)
 function clearChronicleChatConsent() {
@@ -691,7 +692,7 @@ function showChatPanel(panel:ChatPanel) { if(chatPanel.value==='enhance'&&panel!
 const pendingToolCount = computed(() => messages.value.flatMap(message=>message.toolRuns??[]).filter(run=>run.status==='pending_confirmation'||run.status==='running').length)
 const chatNotice = computed(() => errorMessage.value || scribeStatus.value || speechStatus.value || callStatus.value ||
   (continuousDaily && callAvailability.value && !callId.value && callAvailability.value.available_rounds<1 ? '通话暂不可开始；请查看语音额度与当前对话状态。' : ''))
-watch(draft, () => { clearChronicleChatConsent() })
+
 watch([activeConversation,activeCharacter], () => { scribeStatus.value=''; closeChatPanel() })
 
 const openWindows = ref<WindowInstance[]>([])
@@ -865,14 +866,29 @@ async function loadChronicleChatStatus() {
     if (!authenticated.value) return
     chronicleChatInstalled.value = status.workspaceEnabled ?? chronicleAvailable
     if (status.enabled) chronicleChatCap.value = status.maxMicrousd
-    else clearChronicleChatConsent()
+
     chronicleChatStatusText.value = status.reason === 'chronicle_daily_rates_verification_required'
       ? `补查核价已到期（上次 ${status.ratesVerifiedDate || '未核验'}；当前 UTC ${status.utcDate || '未知'}）。本条不会发送补查请求；普通聊天与本地召回仍可使用。`
       : '记忆补查当前未启用；普通聊天与本地召回仍可使用。'
-  } catch { clearChronicleChatConsent();chronicleChatStatusText.value='无法读取补查状态，本条不发起补查；普通聊天仍可使用。' }
+  } catch { chronicleChatStatusText.value='无法读取补查状态，本条不发起补查；普通聊天仍可使用。' }
 }
 watch(authenticated, () => { void loadChronicleChatStatus() })
-watch([activeCharacter,activeConversation,modelProfileId,authenticated], () => { clearChronicleChatConsent() })
+watch([activeCharacter,authenticated], async () => {
+  const cid=activeCharacter.value
+  clearChronicleChatConsent()
+  if (!cid || !authenticated.value) return
+  try {
+    const setting=await api<{enabled:boolean}>(`/api/characters/${cid}/paid-memory-lookup`)
+    if (cid===activeCharacter.value && authenticated.value) chronicleChatConsent.value=setting.enabled
+  } catch { /* The server keeps the authoritative preference. */ }
+})
+async function setRoleLookup(enabled:boolean) {
+  const cid=activeCharacter.value
+  try {
+    const setting=await api<{enabled:boolean}>(`/api/characters/${cid}/paid-memory-lookup?enabled=${enabled}`,{method:'PUT'})
+    if(cid===activeCharacter.value) chronicleChatConsent.value=setting.enabled
+  } catch(e) { errorMessage.value=(e as Error).message }
+}
 function hydrateModel(profile:ModelProfile){
   editingModelId.value=profile.id;modelEditorReady.value=true;modelKeyInput.value=''
   modelDraft.value={name:profile.name,provider_name:profile.provider_name,base_url:profile.base_url,model_name:profile.model_name,protocol:profile.protocol,temperature:profile.temperature,top_p:profile.top_p,max_tokens:profile.max_tokens,context_limit:profile.context_limit,supports_streaming:profile.supports_streaming,enabled:profile.enabled,reasoning_effort:profile.reasoning_effort}
@@ -1029,6 +1045,7 @@ async function consumeChatStream(response: Response, target?: Message,
       else if(eventName==='reasoning_delta' && assistantMessage){assistantMessage.reasoningContent=(assistantMessage.reasoningContent||'')+data.text}
       else if(eventName==='monologue_delta' && assistantMessage){assistantMessage.monologueContent=(assistantMessage.monologueContent||'')+data.text}
       else if(eventName==='usage' && assistantMessage){assistantMessage.usage=data}
+      else if(eventName==='memory_lookup'){memoryLookupProgress.value=data.stage}
       else if(eventName==='tool_waiting_confirmation'){
         if(!assistantMessage){assistantMessage={role:'assistant',content:'',time:timeOf(),toolRuns:[]};messages.value.push(assistantMessage)}
         assistantMessage.toolRuns ||= []
@@ -1060,6 +1077,7 @@ async function send() {
   if(pendingToolCount.value){errorMessage.value='请先处理正文中的工具确认或等待执行完成。';return}
   const cap = chronicleChatConsent.value && chronicleChatAvailable.value ? chronicleChatCap.value : 0
   const waitSeconds = chronicleChatWaitSeconds.value
+  chronicleChatWaitSeconds.value = 12
   await sendText(draft.value.trim(), undefined, cap, waitSeconds)
 }
 async function sendText(text:string, callTurn?:string, chronicleCap=0, chronicleWait:12|30=12) {
@@ -1074,7 +1092,7 @@ async function sendText(text:string, callTurn?:string, chronicleCap=0, chronicle
   if(callTurn && (!activeCall || callTurnId.value!==callTurn)) return
   let settingsTicket:PendingSettings|null=null
   try{if(!activeCall)settingsTicket=reserveNextSettings()}catch(e){errorMessage.value=e instanceof Error?e.message:'单次设置暂存失败';return}
-  if(!activeCall)clearChronicleChatConsent()
+  memoryLookupProgress.value = ""
   scribeCancelEpoch.value++
   stopAutoRead()
   const optimistic:Message={role:'user',content:text||'[附件]',time:timeOf()}; messages.value.push(optimistic); if(!callTurn)draft.value=''; isStreaming.value=true; errorMessage.value=''
@@ -1201,13 +1219,13 @@ onBeforeUnmount(() => { navigator.mediaDevices?.removeEventListener?.('devicecha
                   <div class="chat-tool-entries">
                     <button @click="showChatPanel('voice')"><Mic :size="16"/>语音</button>
                     <button v-if="isolatedAutoRead" :aria-pressed="autoReadEnabled" @click="showChatPanel('read')">朗读：{{autoReadEnabled?'开':'关'}}</button>
-                    <button v-if="chronicleChatInstalled && !callId" :aria-pressed="chronicleChatConsent" @click="showChatPanel('memory')">{{chronicleChatConsent ? '本条补查：允许' : '本条补查'}}</button>
+                    <button v-if="chronicleChatInstalled && !callId" :aria-pressed="chronicleChatConsent" @click="showChatPanel('memory')">{{chronicleChatConsent ? '角色付费补查：开' : '记忆查阅'}}</button>
                   </div>
                   <button v-if="isStreaming" class="send-btn ready" aria-label="停止生成" @click="stopGeneration"><X :size="16"/></button>
                   <button v-else class="send-btn" :disabled="Boolean(callId) || !!pendingToolCount || enhancementBusy || attachmentRef?.busy || !nextSettingsReady || (!draft.trim() && !pendingAttachments.length)" :class="{ready:draft.trim()}" aria-label="发送消息" @click="send"><Send :size="16"/></button>
                 </div>
               </div>
-              <div v-if="chronicleChatConsent" class="chat-paid-selection">仅本条允许补查 · 最多等待 {{chronicleChatWaitSeconds}} 秒 · 上限 USD {{(chronicleChatCap/1000000).toFixed(3)}}<button @click="clearChronicleChatConsent">撤销</button></div>
+              <div v-if="isStreaming && memoryLookupProgress" role="status">{{memoryLookupProgress}}</div>
             </div>
             </div><ChatDrawer :open="chatPanel!==null" :title="chatPanelTitle" @close="closeChatPanel"><ChatEnhancementPanel v-if="chatPanel==='enhance'" :ref="setEnhancementRef" :conversation-id="activeConversation" :character-id="activeCharacter" :message="enhancementMessage" :head="enhancementHead" :draft="draft" :attachment-ids="pendingAttachments.map((a:any)=>a.id)" :quote-draft="pendingQuote" :model-id="modelProfileId" :models="modelProfiles" :disabled="isStreaming||Boolean(callId)" :overrides="nextOverrides" :apply-overrides="applyNextOverrides" :settings-notice="nextSettingsNotice" :settings-ready="nextSettingsReady" @reload="reloadEnhanced" @regenerate="regenerateLast" @quote="acceptQuote" @busy="enhancementBusy=$event"/>
 <template #activity>              <div v-if="callId || scribeRunning || speechRecognitionRunning || autoReadMessageId" class="chat-live-status" role="status">
@@ -1227,7 +1245,13 @@ onBeforeUnmount(() => { navigator.mediaDevices?.removeEventListener?.('devicecha
 <p v-if="!filteredConversations.length">没有匹配的对话。</p><p role="status">{{conversationStatus}}</p><ArchivePanel :character-id="activeCharacter" :conversations="conversations" @imported="loadConversations"/></section>
               <section v-show="chatPanel==='voice'" class="chat-voice-panel"><label v-if="scribeDraftVisible || continuousAvailable" class="voice-call-device">麦克风输入设备 <select v-model="scribeInputDeviceId" :disabled="Boolean(callId) || scribeRunning" @change="saveScribeInputDevice"><option value="">系统默认</option><option v-for="device in scribeInputDevices" :key="device.id" :value="device.id">{{device.label}}</option></select></label><button type="button" class="text-btn" :disabled="Boolean(callId) || scribeRunning || scribeDevicePermissionBusy" @click="showScribeInputDevices">选择麦克风</button><span v-if="scribeInputDeviceNotice" class="voice-status" role="status">{{scribeInputDeviceNotice}}</span><ScribeDraftInput :ref="setScribeControl" @status-change="scribeStatus=$event" :input-device-id="scribeInputDeviceId" v-if="scribeDraftVisible && !callId" :cancel-epoch="scribeCancelEpoch" :character-id="activeCharacter" :conversation-id="activeConversation" :disabled="speechRecognitionRunning" @running-change="scribeRunning=$event" @committed="acceptScribeDraft"/><div v-if="continuousAvailable" class="voice-call-controls"><p v-if="headsetBargeAcceptance && !callId">耳机插话验收。戴耳机并选择麦克风，开始后读第一句：「夜の散歩について、日本語で百字ほど話してください。」听到声音并看到「现在可以插话」后，说一次「少しゆっくり話してください。」</p><p v-if="continuousDaily && !callId">目标对话：{{conversations.find(item=>item.id===activeConversation)?.title || "未选择"}}（ID {{activeConversation ?? "—"}}）；当前最多可开始 {{callAvailability?.available_rounds ?? 0}} 轮；今日剩余录音 {{callAvailability?.scribe_remaining?.attempts ?? 0}} 次、连接 {{callAvailability?.scribe_remaining?.connections ?? 0}} 条、朗读 {{callAvailability?.tts_remaining?.requests ?? 0}} 个请求／{{callAvailability?.tts_remaining?.characters ?? 0}} 字。{{callAvailability?.conversation_incomplete ? "上一条消息已保存，但回复未完成；可手动继续文字聊天，或新建对话开始通话。系统不会自动补发。" : callAvailability?.model_path_ready===false ? callModelPathNotice(callAvailability.model_path_reason) : callAvailability?.active_call ? "已有通话进行中；刷新不会重置额度。" : "回复过长或每日额度不足时保留完整文字并停止语音。" }}</p><button v-if="continuousDaily && !callId && callAvailability?.conversation_incomplete" type="button" :disabled="isStreaming" @click="regenerateLast()">手动继续上一条回复（会调用模型）</button><ContinuousCallSettings v-if="continuousDaily && callSettingsEnabled && !callId" @saved="refreshCallAvailability"/><label v-if="!callId"><input v-model="callAcknowledged" type="checkbox"/>开始通话后，最终转写会自动发送；临时转写不会发送。{{headsetBargeAcceptance ? "本次播放首轮回复时，会在本机监听插话。只把检测到的这一句交给语音识别。" : "等待回复时关闭麦克风。"}} </label><label v-if="!callId && bargeInAvailable && !headsetBargeAcceptance"><input v-model="bargeInRequested" type="checkbox" :disabled="callStartBusy"/>耳机插话（仅本次通话）</label><p v-if="!callId && bargeInAvailable && !headsetBargeAcceptance">勾选后，播放期间会开启麦克风在本机监听。检测到插话会停止旧声音，并把这次插话发送给语音识别。请戴耳机，避免扬声器回声误触发。</p><button v-if="!callId" type="button" :disabled="!callAcknowledged || !modelProfileId || callStartBusy || (continuousDaily && (!activeConversation || (callAvailability?.available_rounds ?? 0)<(headsetBargeAcceptance ? 2 : 1))) || (headsetBargeAcceptance && callPhase==='ended')" @click="startContinuousCall">开始通话</button><button v-if="callId" type="button" @click="interruptContinuousCall()">打断</button><button v-if="callId" type="button" @click="endContinuousCall()">结束通话</button><span role="status">{{callStatus}}</span><details v-if="callId && callSoftwareLatency!==null"><summary>开发详情：播放计时</summary><small data-call-software-latency>{{callSpeechEndMs===null ? "提交录音" : "本地判定说完"}}到开始播放（软件计时）：{{callSoftwareLatency}} 毫秒</small></details><small data-voice-call-phase>状态：{{callPhaseLabel}}。首轮建议戴耳机；扬声器回声仍待真实验收。最长 {{callLimits?.seconds ?? callAvailability?.limits?.limits?.seconds ?? 180}} 秒、{{callLimits?.model_turns ?? callAvailability?.limits?.limits?.rounds ?? 2}} 轮；同时受每日额度限制。</small><ScribeDraftInput :ref="setScribeControl" @status-change="scribeStatus=$event" :input-device-id="scribeInputDeviceId" v-if="callId && callPhase==='listening'" continuous-mode :call-id="callId" :start-signal="callEpoch" :cancel-epoch="scribeCancelEpoch" :barge-capture="bargeCapture" :character-id="activeCharacter" :conversation-id="activeConversation" @committed="onContinuousTranscript" @capture-ready="onContinuousCaptureReady" @audio-commit="onCallAudioCommit" @failed="onContinuousFailure"/></div><section class="chat-device-speech"><h3>设备语音输入</h3><p>识别结果先填入草稿，由你检查后发送。本机识别不可用时，会先询问是否允许浏览器供应商处理音频。</p><button :disabled="scribeRunning || Boolean(callId)" @click="requestSpeechInput">{{speechRecognitionRunning?'停止语音识别':'开始设备识别'}}</button></section></section>
               <section v-show="chatPanel==='read'"><div v-if="isolatedAutoRead" class="voice-auto-controls"><label><input v-model="autoReadEnabled" type="checkbox" @change="!autoReadEnabled && stopAutoRead()"/>回复完成后自动朗读（默认关闭）</label><button v-if="autoReadMessageId" type="button" @click="stopAutoRead">停止语音</button><span>{{autoBudgetDescription}} 设备识别只填写输入框，请核对后自行发送。自动朗读仅用于演示回复或已完成展示核验的 ChatGPT Plan 回复。</span></div></section>
-              <section v-show="chatPanel==='memory'"><p v-if="!chronicleChatAvailable" role="status">{{chronicleChatUnavailableText}}</p><div v-if="chronicleChatAvailable && !callId" class="chronicle-chat-consent"><label><input v-model="chronicleChatConsent" :disabled="isStreaming" type="checkbox"/> 允许本条消息在普通召回为空时补搜记忆（最多 USD {{ (chronicleChatCap/1000000).toFixed(3) }}）</label><label>补查等待上限<select v-model="chronicleChatWaitSeconds" :disabled="!chronicleChatConsent || isStreaming" aria-label="补查等待上限"><option :value="12">12 秒（默认）</option><option :value="30">30 秒（仅本条）</option></select></label><small>这是补查等待上限，后续聊天生成另需时间。选择30秒本身不授予费用或材料权限。</small><small>OpenAI 只接收本条消息和最多三条已确认的标题与梗概。此同意限本条消息。</small></div><p>发送一次后同意自动清除；修改草稿、切换角色、对话或模型也会清除。关闭面板后，输入区仍会显示本条选择及费用上限，可随时撤销。</p></section>
+              <section v-show="chatPanel==='memory'">
+                <p>阿夜可以自行查找已发布的记忆、阅读精修记录并接着回答。生成期间可以随时停止。</p>
+                <label><input type="checkbox" :checked="chronicleChatConsent" :disabled="isStreaming || (!chronicleChatAvailable && !chronicleChatConsent)" @change="setRoleLookup(($event.target as HTMLInputElement).checked)"/> 为当前角色开启付费补查（每次最多 USD 0.037）</label>
+                <p v-if="!chronicleChatAvailable" role="status">{{chronicleChatUnavailableText}}</p>
+                <p>普通召回为空且模型合资格时，补查可发送本次问题与候选的已确认标题、梗概。关闭后仍可本地查阅。</p>
+                <label>本条补查等待上限<select v-model="chronicleChatWaitSeconds" :disabled="!chronicleChatConsent || isStreaming"><option :value="12">12 秒</option><option :value="30">30 秒</option></select></label>
+              </section>
               <section v-show="chatPanel==='model'"><label>聊天模型<select class="model-select model-switch" v-model="modelProfileId" @change="stopAutoRead(); model = modelProfiles.find(profile => profile.id === modelProfileId)?.name || 'YOSAKI · demo'"><option :value="null">YOSAKI · demo</option><option v-for="profile in modelProfiles" :key="profile.id" :value="profile.id">{{profile.name}} · {{profile.model_name}}</option></select></label><button @click="visitFeature('models')">管理模型配置</button></section>
               <section v-show="chatPanel==='status'"><p v-if="errorMessage">{{errorMessage}}</p><p v-if="scribeStatus">{{scribeStatus}}</p><p v-if="speechStatus">{{speechStatus}}</p><p v-if="callStatus">{{callStatus}}</p><p v-if="pendingToolCount">工具正在等待你的确认或执行结果；关闭面板后在正文查看工具及参数。</p><button @click="showChatPanel('voice')">查看语音额度与设置</button></section>
             </ChatDrawer>

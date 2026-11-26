@@ -1812,6 +1812,22 @@ def chronicle_chat_supplement_enabled():
     return chronicle_chat_supplement_state()['enabled']
 
 
+@app.get('/api/characters/{character_id}/paid-memory-lookup')
+def paid_memory_lookup(character_id: int):
+    with connect() as db:
+        row=db.execute('SELECT paid_enabled FROM chat_memory_lookup_preferences WHERE character_id=?',(character_id,)).fetchone()
+        return {'enabled':bool(row and row[0])}
+
+
+@app.put('/api/characters/{character_id}/paid-memory-lookup')
+def set_paid_memory_lookup(character_id: int, enabled: bool):
+    with connect() as db:
+        if not db.execute('SELECT 1 FROM characters WHERE id=? AND enabled=1',(character_id,)).fetchone():
+            raise HTTPException(404,'角色不可用')
+        db.execute('INSERT INTO chat_memory_lookup_preferences VALUES(?,?) ON CONFLICT(character_id) DO UPDATE SET paid_enabled=excluded.paid_enabled',(character_id,int(enabled)))
+    return {'enabled':enabled}
+
+
 @app.get('/api/chat/chronicle-supplement-status')
 def chronicle_chat_supplement_status():
     from . import memory_v2_chronicle_semantic as semantic
@@ -2090,8 +2106,14 @@ def list_chat_tool_runs(conversation_id: int):
 
 @app.post("/api/chat/tool-runs/{run_id}/decision")
 async def decide_chat_tool_run(run_id: int, payload: ToolDecisionInput, request: Request = None):
+    return await _decide_tool(run_id,payload,request)
+
+
+async def _decide_tool(run_id, payload, request, *, auto=False, stop_reason=None):
     with connect() as check_db:
         candidate=check_db.execute('SELECT server_id FROM tool_runs WHERE id=?',(run_id,)).fetchone()
+    if auto and (not candidate or candidate[0]!=-34):
+        raise HTTPException(409,'非记忆工具需要确认')
     if candidate and candidate[0]==chat_web.SERVER:
         return await chat_web.decide(_sys.modules[__name__],run_id,payload)
     with connect() as db:
@@ -2125,13 +2147,15 @@ async def decide_chat_tool_run(run_id: int, payload: ToolDecisionInput, request:
             try:
                 arguments=json.loads(run["arguments"])
                 validate_tool_arguments(arguments,spec["input_schema"])
-                if payload.approve:
+                if stop_reason:
+                    result=receipt={'state':'unavailable','message':stop_reason}; status='invalid'
+                elif payload.approve:
                     with chat_history.reading(db,run["conversation_id"]):
                         result, receipt=chronicle_tools.execute(db,cid,identity["id"],run["tool_name"],arguments)
                     status='success'
                 else:
                     result=receipt={'state':'rejected','message':'用户拒绝本次记忆查阅。'}; status='rejected'
-            except ValueError:
+            except (ValueError, HTTPException):
                 result=receipt={'state':'unavailable','message':'记忆当前不可读取，未返回旧内容。'}; status='revoked'
             serialized=json.dumps(receipt,ensure_ascii=False)
             db.execute("UPDATE tool_runs SET status=?,confirmed=1,result=?,finished_at=? WHERE id=? AND status='pending_confirmation'",
@@ -2284,6 +2308,24 @@ def verified_tool_turn(db, run, *, expected_status="awaiting_confirmation"):
 
 @app.post("/api/chat/tool-runs/{run_id}/continue")
 async def continue_after_tool(run_id: int, request: Request = None):
+    return await _continue_tool(run_id,request)
+
+
+async def chat_wire_events(response, gated):
+    from . import responses_adapter
+    if gated:
+        async for item in responses_adapter.iter_sse_events(response.aiter_lines()):
+            yield item
+    else:
+        async for line in response.aiter_lines():
+            if not line.startswith("data:"): continue
+            raw=line[5:].strip()
+            if raw=="[DONE]": break
+            try: yield json.loads(raw)
+            except json.JSONDecodeError: continue
+
+
+async def _continue_tool(run_id,request,*,answer_only=False, autonomous=False, first_profile=None, overrides=None):
     continuous_gate = getattr(app.state, "voice_continuous", None)
     if continuous_gate and continuous_gate.enabled() and continuous_gate.isolated():
         raise HTTPException(409, "voice_call_required")
@@ -2301,6 +2343,13 @@ async def continue_after_tool(run_id: int, request: Request = None):
         profile=db.execute("SELECT * FROM model_profiles WHERE id=? AND enabled=1",(run["model_profile_id"],)).fetchone()
         if profile is None:
             raise HTTPException(409,"所用模型配置不存在或已停用")
+        if first_profile is not None:
+            profile=model_capabilities.effective(profile,overrides)
+            if any(profile[k]!=first_profile[k] for k in ('protocol','base_url','model_name','context_limit','max_tokens','reasoning_effort','temperature','top_p')):
+                raise HTTPException(409,'聊天模型配置已经变化')
+            settings=db.execute('SELECT memory_enabled FROM context_settings WHERE character_id=?',(conversation['character_id'],)).fetchone()
+            if settings and not settings[0]:
+                raise HTTPException(409,'该角色已关闭记忆')
         chat_requests.begin(db,generation_id,run["conversation_id"],conversation["character_id"],profile,'tool_continuation')
         desire_advisory=desires.chat_advisory(db,conversation["character_id"],topic)
         blocks=db.execute("SELECT * FROM prompt_blocks WHERE character_id=? ORDER BY order_index,id",(conversation["character_id"],)).fetchall()
@@ -2309,6 +2358,8 @@ async def continue_after_tool(run_id: int, request: Request = None):
         from . import memory_v2_chronicle_tools
         history = scoped_tool_history(db,run["conversation_id"],conversation["character_id"],getattr(request.state, 'user', {}).get('id') if request else None,history)
         tools,tool_map=available_model_tools(db)
+        if answer_only:
+            tools,tool_map=[],{}
         changed=db.execute("UPDATE messages SET tool_batch_status='continuing' WHERE id=? AND tool_batch_status='awaiting_confirmation'",(message["id"],)).rowcount
         if not changed: raise HTTPException(409,"这轮工具调用已经继续或完成")
         owner_row = db.execute("SELECT id FROM users LIMIT 1").fetchone()
@@ -2320,9 +2371,13 @@ async def continue_after_tool(run_id: int, request: Request = None):
     try:
         with connect() as db: history=chat_protocol.safe_history(db,chat_context.uncovered(db,run['conversation_id'],history),profile)
         request_messages=build_messages(character,blocks,history,None,memories,summary,settings=limit,include_provider_state=is_responses,desire_advisory=desire_advisory)
+        if answer_only:
+            request_messages.append({'role':'system','content':'本轮记忆查阅已结束。根据现有结果直接回答；缺少依据时请说明。'})
         with connect() as db:
             request_messages,source_manifest=finalize_chat_context(db,run['conversation_id'],profile,request_messages,history,None,limit,memories,summary,desire_advisory,chronicle_diagnostics,tools)
         body,url=chat_protocol.serialize(profile,request_messages,tools)
+        if autonomous and len(chat_requests.dumps(body).encode()) > profile['context_limit']-profile['max_tokens']:
+            raise HTTPException(422,'记忆续答超过当前模型的上下文预算')
         chat_requests.wire(connect,generation_id,body,parameters=model_capabilities.effects(profile,body),sources=source_manifest)
     except Exception:
         with connect() as db:
@@ -2333,6 +2388,10 @@ async def continue_after_tool(run_id: int, request: Request = None):
         request_started=time.monotonic()
         reply_parts=[]; calls={}; reasoning_parts=[]; visible=("",""); generation_status="completed"; usage=None; finish_reason=None
         response_state=responses_adapter.StreamState() if is_responses else None
+        gate=None
+        if autonomous and is_plan and os.getenv("YOSAKI_CHAT_VOICE_DISPLAY_GATED_ISOLATED")=="1":
+            from .voice.realtime_answer_display import AnswerDisplayGate
+            gate=AnswerDisplayGate()
         yield sse("message_start",{"conversation_id":run["conversation_id"],"character_id":conversation["character_id"],"owner_id":owner_id,"generation_id":generation_id,"model":profile["model_name"],"mode":"provider","continuation":True})
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(120.0,connect=15.0)) as client:
@@ -2340,19 +2399,28 @@ async def continue_after_tool(run_id: int, request: Request = None):
                 # The response stream starts after the atomic claim. Recheck before
                 # contacting the provider in case the source changed meanwhile.
                 with connect() as db:
-                    verified_tool_turn(db,run,expected_status="continuing")
+                    _,_,_,live,_=verified_tool_turn(db,run,expected_status="continuing")
+                    if autonomous:
+                        identity=current_session(request)
+                        if not identity or identity['id']!=owner_id:
+                            raise HTTPException(403,'会话资格已变化')
+                        fresh={r['id']:r['content'] for r in scoped_tool_history(db,run['conversation_id'],conversation['character_id'],owner_id,live)}
+                        if any(r['role']=='tool' and fresh.get(r['id'])!=r['content'] for r in history):
+                            raise HTTPException(409,'记忆来源已变化，续答未发送')
                 chat_requests.dispatched(connect,generation_id)
                 async with client.stream("POST",url,headers=headers,json=body) as response:
                     if response.status_code>=400:
                         detail=(await response.aread()).decode(errors="replace")[:500]
                         raise RuntimeError(f"模型服务返回 HTTP {response.status_code}: {detail}")
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:"): continue
-                        raw=line[5:].strip()
-                        if raw=="[DONE]": break
-                        try: data=json.loads(raw)
-                        except json.JSONDecodeError: continue
+                    async for data in chat_wire_events(response, gate is not None):
                         chat_requests.observe(connect,generation_id,data,(time.monotonic()-request_started)*1000)
+                        if gate:
+                            classification=responses_adapter.classify_candidate_event(data)
+                            if classification=="unsupported" or classification in responses_adapter.METADATA_STOPS and classification!="metadata_answer_moderation":
+                                raise RuntimeError("续答包含未支持的展示控制事件")
+                            gate.observe(data)
+                            if classification in ("notice","metadata_answer_moderation"):
+                                continue
                         if response_state:
                             if data.get("type")=="response.failed": raise RuntimeError(chatgpt_plan.error_message(data) if is_plan else "Responses 服务未完成本次回复")
                             if data.get("type")=="response.incomplete": generation_status="incomplete"
@@ -2360,12 +2428,15 @@ async def continue_after_tool(run_id: int, request: Request = None):
                         choice=(data.get("choices") or [{}])[0]; delta=choice.get("delta",{}) or {}; finish_reason=choice.get("finish_reason") or finish_reason
                         usage=data.get("usage") or usage
                         reason=delta.get("reasoning_content") or ""
-                        if reason: reasoning_parts.append(reason); yield sse("reasoning_delta",{"text":reason})
+                        if reason:
+                            reasoning_parts.append(reason)
+                            if not gate: yield sse("reasoning_delta",{"text":reason})
                         text=delta.get("content") or ""
                         if text:
                             reply_parts.append(text)
                             visible,generation_status,events=reply_events("".join(reply_parts),visible,bool(limit.get("monologue_enabled")))
-                            for event in events: yield event
+                            if not gate:
+                                for event in events: yield event
                         for part in delta.get("tool_calls",[]) or []:
                             index=part.get("index",0); call=calls.setdefault(index,{"id":"","type":"function","function":{"name":"","arguments":""}})
                             if part.get("id"): call["id"]=part["id"]
@@ -2374,6 +2445,12 @@ async def continue_after_tool(run_id: int, request: Request = None):
                 raise RuntimeError("ChatGPT 套餐回复流未正常完成；请检查账户状态后重试")
             if not is_responses and finish_reason is None:raise RuntimeError('模型流没有可靠终态，已收到正文与用量保留；未自动重试')
             if finish_reason in ("length","content_filter","error"): generation_status="incomplete"
+            if gate:
+                review=gate.finish(model_completed=response_state.completed and generation_status=="completed",public_text="".join(reply_parts))
+                tool_only=response_state.completed and generation_status=="completed" and not any(reply_parts) and gate.matches_tool_proposal(calls)
+                if review.action!="allow" and not tool_only:
+                    raise RuntimeError("续答未通过展示核验（"+review.reason+"）")
+                if visible[0]: yield sse("text_delta",{"text":visible[0]})
             if calls and generation_status=="incomplete": raise RuntimeError("工具提案未完整生成，不可执行")
             if calls:
                 parsed=[]
@@ -2408,7 +2485,8 @@ async def continue_after_tool(run_id: int, request: Request = None):
             yield sse("message_complete",{"conversation_id":run["conversation_id"],"generation_id":generation_id,"model":profile["model_name"],"generation_status":generation_status,**saved})
         except asyncio.CancelledError:
             with connect() as db:
-                db.execute("INSERT INTO messages(conversation_id,role,content,model,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,provider_state_json) VALUES(?,'assistant',?,?,?,?,?,?,?,?)",(run["conversation_id"],visible[0],profile["model_name"],now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,"stopped",json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None))
+                if not gate:
+                    db.execute("INSERT INTO messages(conversation_id,role,content,model,created_at,reasoning_content,monologue_content,reasoning_source,generation_status,provider_state_json) VALUES(?,'assistant',?,?,?,?,?,?,?,?)",(run["conversation_id"],visible[0],profile["model_name"],now(),"".join(reasoning_parts),visible[1],("responses_summary" if is_responses else "compatible") if reasoning_parts else None,"stopped",json.dumps(response_state.reasoning_items) if response_state and response_state.reasoning_items else None))
                 db.execute("UPDATE messages SET tool_batch_status='completed' WHERE id=?",(run["assistant_message_id"],))
             raise
         except HTTPException as exc:
@@ -2639,6 +2717,10 @@ async def chat_stream(payload: ChatInput, request: Request = None) -> StreamingR
                     raise HTTPException(422,'引用不是当前路径中的原文片段')
                 db.execute('INSERT INTO chat_quotes VALUES(?,?,?,?)',(user_message_id,source['id'],chat_history.digest(source['content']),excerpt))
         db.execute('UPDATE chat_attempts SET origin_message_id=? WHERE id=?',(user_message_id,generation_id))
+        if request and not payload.voice_call_id and not payload.reuse_last_user:
+            preference=db.execute('SELECT paid_enabled FROM chat_memory_lookup_preferences WHERE character_id=?',(payload.character_id,)).fetchone()
+            if preference is not None:
+                payload.chronicle_supplement_max_microusd=37000 if preference[0] else 0
         if payload.chronicle_supplement_max_microusd:
             db.execute('UPDATE chat_attempts SET parameters_json=? WHERE id=?',
                 (json.dumps({'chronicleSupplement': chronicle_wait_metadata(payload)}), generation_id))
@@ -2737,18 +2819,7 @@ async def chat_stream(payload: ChatInput, request: Request = None) -> StreamingR
                         else:
                             detail=(await response.aread()).decode(errors="replace")[:500]; yield sse("error",{"message":f"模型服务返回 HTTP {response.status_code}：{detail}"})
                         return
-                    async def wire_events():
-                        if reviewed_voice_chat:
-                            async for item in responses_adapter.iter_sse_events(response.aiter_lines()):
-                                yield item
-                        else:
-                            async for line in response.aiter_lines():
-                                if not line.startswith("data:"): continue
-                                raw=line[5:].strip()
-                                if raw=="[DONE]": break
-                                try: yield json.loads(raw)
-                                except json.JSONDecodeError: continue
-                    async for data in wire_events():
+                    async for data in chat_wire_events(response, reviewed_voice_chat):
                         if payload.voice_call_id and not app.state.voice_continuous.model_active(
                                 payload.voice_call_id, payload.voice_call_turn_id, owner_id):
                             return  # Interrupted round: never publish late text or completion.
@@ -2813,7 +2884,10 @@ async def chat_stream(payload: ChatInput, request: Request = None) -> StreamingR
         if reviewed_voice_chat:
             reviewed=display_gate.finish(model_completed=(response_state.completed and generation_status=="completed"),
                                          public_text="".join(reply_parts))
-            if reviewed.action!="allow":
+            tool_only = (not payload.voice_call_id and response_state.completed
+                         and generation_status == "completed" and not any(reply_parts)
+                         and display_gate.matches_tool_proposal(calls))
+            if reviewed.action!="allow" and not tool_only:
                 if payload.voice_call_id:
                     from .voice.continuous_call import CALL_EVENT_LOG
                     CALL_EVENT_LOG.warning("%s", json.dumps({
@@ -2821,7 +2895,7 @@ async def chat_stream(payload: ChatInput, request: Request = None) -> StreamingR
                         "turn_id":payload.voice_call_turn_id,
                         "model_completed":response_state.completed, **reviewed.diagnostic(),
                     }, separators=(",", ":")))
-                yield sse("error",{"message":"本次回复未通过展示核验，文字与自动朗读均已停止"})
+                yield sse("error",{"message":"本次回复未通过展示核验，文字与自动朗读均已停止（"+reviewed.reason+"）"})
                 return
             # The isolated reviewed mode publishes only after the full answer is bound.
             if visible[0]: yield sse("text_delta",{"text":visible[0]})
@@ -2872,7 +2946,64 @@ async def chat_stream(payload: ChatInput, request: Request = None) -> StreamingR
             return
         if usage: yield sse("usage",usage)
         yield sse("message_complete",{"conversation_id":conversation_id,"generation_id":generation_id,"model":used_model,"finish_reason":finish_reason,"generation_status":generation_status,"voice_auto_read_eligible":reviewed_voice_chat and generation_status=="completed",**saved})
-    return StreamingResponse(chat_requests.tracked(generate(),connect,generation_id),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
+    stream = chat_requests.tracked(generate(),connect,generation_id)
+    if request and not payload.voice_call_id and os.getenv('YOSAKI_CHRONICLE_CONTEXT')=='1' and history_limit.get('memory_enabled'):
+        stream = autonomous_memory_stream(stream,request,profile,payload.overrides)
+    return StreamingResponse(stream,media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
+
+
+async def autonomous_memory_stream(stream, request, profile, overrides):
+    from .memory_v2_chronicle_tools import NAMES
+    seen=set()
+    rounds=0
+    try:
+        while True:
+            proposals=[]
+            batch=None
+            async for event in stream:
+                name=event.split('\n',1)[0]
+                if name=='event: tool_waiting_confirmation':
+                    proposals.append(json.loads(event.split('data: ',1)[1]))
+                elif name=='event: tool_batch_waiting':
+                    batch=event
+                else:
+                    yield event
+            if not batch or not proposals:
+                return
+            manual=[]
+            finish=False
+            for item in proposals:
+                name=item['mcp_tool_name']
+                if name not in NAMES or item['server_name']!='Chronicle':
+                    manual.append(item)
+                    continue
+                if await request.is_disconnected():
+                    return
+                args=dict(item['arguments'])
+                if isinstance(args.get('query'),str):
+                    args['query']=' '.join(args['query'].casefold().split())
+                key=(name,chat_requests.dumps(args))
+                stop=key in seen or len(seen)>=4
+                seen.add(key)
+                yield sse('memory_lookup',{'stage':'正在查找记忆' if name==NAMES[0] else '正在阅读经历'})
+                result=await _decide_tool(item['run_id'],ToolDecisionInput(approve=True),request,
+                    auto=True,stop_reason='本轮已查询过相同材料或已达到查阅上限' if stop else None)
+                if stop or result['status']!='success' or (name==NAMES[0] and not result['result'].get('blocks')):
+                    finish=True
+            if manual:
+                for item in manual:
+                    yield sse('tool_waiting_confirmation',item)
+                yield batch
+                return
+            if await request.is_disconnected() or not current_session(request):
+                return
+            rounds+=1
+            response=await _continue_tool(proposals[-1]['run_id'],request,answer_only=finish or rounds>=3,autonomous=True, first_profile=profile, overrides=overrides)
+            stream=response.body_iterator
+    except HTTPException as exc:
+        yield sse('error',{'message':str(exc.detail)})
+    finally:
+        await stream.aclose()
 
 
 from . import chat_api
