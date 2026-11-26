@@ -512,6 +512,10 @@ def main() -> int:
         if args.mode != "development" or not args.voice_acceptance:
             parser.error("--daily-voice 仅用于受保护 Development Voice 入口")
         os.environ.update(DAILY_VOICE_FLAGS)
+        if args.port in (None, 8000) and args.acceptance_frontend_port is None:
+            os.environ.setdefault("YOSAKI_OWNER_BILLING", "metered")
+            if os.environ["YOSAKI_OWNER_BILLING"] == "metered":
+                os.environ["YOSAKI_CHRONICLE_PAID_ENABLED"] = "1"
         if args.acceptance_frontend_port is not None:
             os.environ["YOSAKI_ALLOWED_ORIGINS"] = (
                 f"http://127.0.0.1:{args.acceptance_frontend_port}")

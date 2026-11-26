@@ -366,14 +366,15 @@ class FreeActivityService:
             if not row or row["status"] != "deliberating":
                 return
             remaining = row["max_output_tokens"] - row["output_tokens_used"]
-            if row["model_calls"] >= row["max_model_calls"] or remaining < 128:
+            from .owner_billing import metered
+            if not metered() and (row["model_calls"] >= row["max_model_calls"] or remaining < 128):
                 self.finish(db, row, "budget_exhausted")
                 return
             profile = db.execute("SELECT * FROM model_profiles WHERE id=? AND enabled=1", (row["model_profile_id"],)).fetchone()
             if not profile:
                 db.execute("UPDATE awakening_sessions SET status='paused',termination_reason='model_unavailable',revision=revision+1 WHERE id=?", (session_id,))
                 return
-            reserve = min(800, profile["max_tokens"], remaining)
+            reserve = min(800, profile["max_tokens"]) if metered() else min(800, profile["max_tokens"], remaining)
             if reserve < 128:
                 self.finish(db, row, "budget_exhausted")
                 return

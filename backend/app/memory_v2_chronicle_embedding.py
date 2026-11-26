@@ -178,11 +178,13 @@ def cached_query_vector(db,cid,owner_id,query):
     return None
 
 
-def cached_search(db,cid,owner_id,query,**options):
+def cached_search(db,cid,owner_id,query,*,chat_mentions=False,**options):
     vector=cached_query_vector(db,cid,owner_id,query)
     if vector is not None:
         try:
-            return vectors.hybrid(db,cid,owner_id,query,query_vector=vector,model_version=MODEL,**options)
+            result = vectors.hybrid(db,cid,owner_id,query,query_vector=vector,model_version=MODEL,**options)
+            if result['blocks'] or not chat_mentions:
+                return result
         except ValueError:
             pass
-    return channel.search(db,cid,owner_id,query,**options)
+    return channel.search(db,cid,owner_id,query,chat_mentions=chat_mentions,**options)

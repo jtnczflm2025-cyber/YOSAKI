@@ -48,7 +48,7 @@ const budgetInputError = computed(() => {
 })
 type ScribeCounts = {attempts:number;connections:number;audio_seconds:number}
 type ScribeSettings = {enabled:boolean;service_enabled:boolean;limits:ScribeCounts;maximum:ScribeCounts;revision:number;per_attempt_audio_seconds:number}
-type ScribeUsage = {remaining:ScribeCounts;available_attempts:number;per_attempt_audio_seconds:number;used:{attempts:number;connections:number;reserved_audio_seconds:number;actual_audio_seconds:number};reset_at:string}
+type ScribeUsage = {metered?:boolean;remaining:ScribeCounts;available_attempts:number;per_attempt_audio_seconds:number;used:{attempts:number;connections:number;reserved_audio_seconds:number;actual_audio_seconds:number};reset_at:string}
 const scribeSettings = ref<ScribeSettings|null>(null)
 const scribeUsage = ref<ScribeUsage|null>(null)
 const scribeDraft = ref<ScribeCounts>({attempts:1,connections:1,audio_seconds:15})
@@ -199,7 +199,7 @@ async function saveScribe() {
   <section class="voice-section">
     <section v-if="scribeSettings || budgetSettings" class="daily-voice-overview" aria-label="已保存的语音设置">
       <h3>日常语音</h3>
-      <p v-if="scribeSettings">麦克风{{scribeSettings.service_enabled && scribeSettings.enabled ? '已启用' : '未启用'}}<span v-if="scribeUsage"> · 今天最多还能录音 {{scribeUsage.available_attempts}} 次</span>。<button type="button" class="text-btn" @click="focusSection(recordingSection)">录音设置</button></p>
+      <p v-if="scribeSettings">麦克风{{scribeSettings.service_enabled && scribeSettings.enabled ? '已启用' : '未启用'}}<span v-if="scribeUsage?.metered"> · 按量使用</span><span v-else-if="scribeUsage"> · 今天最多还能录音 {{scribeUsage.available_attempts}} 次</span>。<button type="button" class="text-btn" @click="focusSection(recordingSection)">录音设置</button></p>
       <p v-if="budgetSettings">朗读日上限 {{budgetSettings.effective_limits.jobs}} 次合成、{{budgetSettings.effective_limits.requests}} 次请求、{{budgetSettings.effective_limits.characters}} 字。<button type="button" class="text-btn" @click="focusSection(readingSection)">朗读额度设置</button></p>
     </section>
     <AIExpressionSettings />
@@ -257,7 +257,7 @@ async function saveScribe() {
         <label>每日预留音频秒数（0～{{scribeSettings.maximum.audio_seconds}}）<input v-model.number="scribeDraft.audio_seconds" type="number" min="0" :max="scribeSettings.maximum.audio_seconds" step="1"/></label>
         <p>默认每天 1 次录音、1 条连接、{{scribeSettings.per_attempt_audio_seconds}} 秒预留音频。每次开始会预占完整 {{scribeSettings.per_attempt_audio_seconds}} 秒；可录音次数受次数、连接数和音频秒数中最先耗尽的一项限制，即使取消或结果未知也不返还。重新登录和刷新页面不重置；额度不是费用上限。</p>
         <p v-if="scribeDraftAvailable !== null">按当前填写的额度，每天最多可开始 {{scribeDraftAvailable}} 次录音；保存后才会生效。</p>
-        <p v-if="scribeUsage">今日剩余额度：{{scribeUsage.remaining.attempts}} 次尝试、{{scribeUsage.remaining.connections}} 条连接、{{scribeUsage.remaining.audio_seconds}} 秒预留音频。<strong>按每次预留 {{scribeUsage.per_attempt_audio_seconds}} 秒，当前最多还能录音 {{scribeUsage.available_attempts}} 次。</strong> 已尝试发送约 {{scribeUsage.used.actual_audio_seconds.toFixed(2)}} 秒，不能证明供应商全部收到。香港时间零点重置。</p>
+        <p v-if="scribeUsage?.metered">今日已尝试发送 {{scribeUsage.used.actual_audio_seconds.toFixed(2)}} 秒。</p><p v-else-if="scribeUsage">今日剩余额度：{{scribeUsage.remaining.attempts}} 次尝试、{{scribeUsage.remaining.connections}} 条连接、{{scribeUsage.remaining.audio_seconds}} 秒预留音频。<strong>按每次预留 {{scribeUsage.per_attempt_audio_seconds}} 秒，当前最多还能录音 {{scribeUsage.available_attempts}} 次。</strong> 已尝试发送约 {{scribeUsage.used.actual_audio_seconds.toFixed(2)}} 秒，不能证明供应商全部收到。香港时间零点重置。</p>
         <label v-if="scribeEnabled&&!scribeSettings.enabled"><input v-model="confirmScribeEnable" type="checkbox"/>我确认主动开启麦克风草稿功能；录音会发送给 ElevenLabs</label>
         <label v-if="scribeIncreases"><input v-model="confirmScribeIncrease" type="checkbox"/>我确认提高每日录音调用量，可能增加实际费用</label>
         <p v-if="scribeInputError" role="alert">{{scribeInputError}}</p>

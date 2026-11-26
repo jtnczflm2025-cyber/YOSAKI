@@ -362,6 +362,7 @@ async function moreMembers() {
   finally { nodeLoading.value = false }
 }
 
+const semanticMetered=ref(false)
 const semanticOpen=ref(false), semanticApproved=ref(false), semanticModel=ref(0), semanticBusy=ref(false)
 const semanticModels=ref<{id:number;name:string}[]>([])
 const semanticItems=ref<{entryId:string;title:string;synopsis:string}[]>([])
@@ -384,15 +385,15 @@ async function openSemantic() {
   semanticMessage.value='';semanticCap.value=0;semanticModels.value=[]
   const key=searchKey.value, epoch=semanticEpoch
   try {
-    const status=await getJson<{enabled:boolean;maxMicrousd:number;reason?:string}>('/api/memory-v2/workspace/semantic-supplement/status',{})
+    const status=await getJson<{enabled:boolean;maxMicrousd:number;metered?:boolean;reason?:string}>('/api/memory-v2/workspace/semantic-supplement/status',{})
     const models=status.enabled?await loadGenerationModels('/semantic-supplement/status'):[]
     if(key!==searchKey.value||epoch!==semanticEpoch)return
     if(!models.length){semanticMessage.value=status.reason==='chronicle_daily_rates_verification_required'?'语义补搜核价已到期，当前不发送请求；普通搜索结果保留。':'语义补搜暂未启用或未配置合资格账户，普通搜索结果保留。';return}
-    semanticModels.value=models;semanticModel.value=models[0]?.id||0;semanticCap.value=status.maxMicrousd
+    semanticMetered.value=Boolean(status.metered);semanticModels.value=models;semanticModel.value=models[0]?.id||0;semanticCap.value=status.maxMicrousd
   }catch{if(key===searchKey.value&&epoch===semanticEpoch)semanticMessage.value='无法读取语义补搜设置，普通搜索结果保留。'}
 }
 async function semanticSearch() {
-  if(!canSupplement.value||!semanticApproved.value||!semanticModel.value||!semanticCap.value||semanticBusy.value)return
+  if(!canSupplement.value||(!semanticMetered.value&&!semanticApproved.value)||!semanticModel.value||!semanticCap.value||semanticBusy.value)return
   const key=searchKey.value, epoch=semanticEpoch
   const controller=new AbortController()
   const timer=window.setTimeout(()=>controller.abort(),65000)
@@ -685,10 +686,10 @@ onMounted(async () => {
             <button v-if="canSupplement" class="text-button" :disabled="semanticBusy" :aria-expanded="semanticOpen" @click="openSemantic">语义补搜</button>
             <section v-if="canSupplement && semanticOpen" :aria-busy="semanticBusy">
               <template v-if="semanticCap">
-                <p>向 OpenAI 发送当前查询及最多三条已确认记忆的标题和梗概。不发送原始对话。单次最多 USD {{ (semanticCap/1000000).toFixed(3) }}。</p>
+                <p>向 OpenAI 发送当前查询及最多三条已确认记忆的标题和梗概。不发送原始对话。{{semanticMetered ? "按实际用量计费。" : "单次最多 USD "+(semanticCap/1000000).toFixed(3)+"。"}}</p>
                 <select v-model="semanticModel" :disabled="semanticBusy" aria-label="语义补搜账户"><option v-for="m in semanticModels" :key="m.id" :value="m.id">{{m.name}}</option></select>
-                <label><input type="checkbox" v-model="semanticApproved" :disabled="semanticBusy" />同意本次发送和费用</label>
-                <button :disabled="!semanticApproved || semanticBusy || !semanticModel" @click="semanticSearch">开始补搜</button>
+                <label v-if="!semanticMetered"><input type="checkbox" v-model="semanticApproved" :disabled="semanticBusy" />同意本次发送和费用</label>
+                <button :disabled="(!semanticMetered && !semanticApproved) || semanticBusy || !semanticModel" @click="semanticSearch">开始补搜</button>
               </template>
               <p v-if="semanticMessage" role="status">{{ semanticMessage }}</p>
               <div v-for="item in semanticItems" :key="item.entryId" class="search-entry">

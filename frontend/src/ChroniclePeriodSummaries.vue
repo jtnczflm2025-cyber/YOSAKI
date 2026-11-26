@@ -7,7 +7,7 @@ const props=defineProps<{cid:number;period?:string|null;revision:string}>()
 const rows=ref<Period[]>([]),key=ref(''),enabled=ref(false),busy=ref(false),error=ref(''),configured=ref(false)
 const bounded=ref(false), recall=ref(false), scopeFuture=ref(false), allowRecall=ref(false)
 const check=ref<{lastCheck?:string;nextCheck?:string}>({})
-const budget=ref<{perTask?:number;perDay?:number;total?:number;spent?:number;reserved?:number;today?:number;endsAt?:string}>({})
+const budget=ref<{billingMode?:string;perTask?:number;perDay?:number;total?:number;spent?:number;reserved?:number;today?:number;endsAt?:string}>({})
 const days=ref(30), perTask=ref(0.15), perDay=ref(1), total=ref(10)
 const pending=computed(()=>rows.value.filter(r=>!r.body).length)
 const dateText=(s?:string)=>s?new Date(s).toLocaleString('zh-HK',{timeZone:'Asia/Hong_Kong'}):'尚无记录'
@@ -80,7 +80,7 @@ onBeforeUnmount(()=>{seq++;clearTimeout(timer);document.removeEventListener('vis
 
 <p>服务启动、发布变动及每日零点检查。周、月、季度随发布整理；达到半年档或年度档后补齐对应回顾。只有当前已发布、日期明确且已确认的标题和梗概参与。</p>
 <p>自动摘要用于召回：{{recall?'已授权，按实际命中范围核验':'未授权'}}。展开仍只读取已确认的完整精修。</p>
-<template v-if="budget.perTask"><p>每篇 {{usd(budget.perTask)}}，每日 {{usd(budget.perDay)}}，总额 {{usd(budget.total)}}，到期 {{dateText(budget.endsAt)}}。</p><p>已估算 {{usd(budget.spent)}} · 预留 {{usd(budget.reserved)}} · 今日占用 {{usd(budget.today)}}（每日预算按 UTC）。</p></template>
+<p v-if="budget.billingMode==='metered'">持续按量加工 · 已估算 {{usd(budget.spent)}} · 预留 {{usd(budget.reserved)}}。可随时暂停或撤销。</p><template v-else-if="budget.perTask"><p>每篇 {{usd(budget.perTask)}}，每日 {{usd(budget.perDay)}}，总额 {{usd(budget.total)}}，到期 {{dateText(budget.endsAt)}}。</p><p>已估算 {{usd(budget.spent)}} · 预留 {{usd(budget.reserved)}} · 今日占用 {{usd(budget.today)}}（每日预算按 UTC）。</p></template>
 <form v-if="configured&&!bounded" @submit.prevent="change('authorize')">
 <p>授权范围为本角色当前符合条件的经历。供应商为 OpenAI Standard，模型 gpt-6.1-sol。填写金额的单位为 USD。</p>
 <label>有效天数 <input type="number" min="1" max="365" required v-model.number="days"></label>

@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from .budget_schema import configured_limit
 from datetime import datetime, time, timedelta, timezone
+from ..owner_billing import metered
+
 import os
 import sqlite3
 
@@ -171,9 +173,9 @@ def _reserve_daily(db: sqlite3.Connection, owner_id: int, characters: int,
     changed = db.execute("""UPDATE voice_auto_owner_day_budget SET
         synth_jobs=synth_jobs+?, request_count=request_count+1,
         character_count=character_count+?, updated_at=?
-        WHERE owner_id=? AND local_day=? AND synth_jobs+?<=?
-          AND request_count+1<=? AND character_count+?<=?""",
-        (int(first_request), characters, now, owner_id, local_day,
+        WHERE owner_id=? AND local_day=? AND (? OR (synth_jobs+?<=?
+          AND request_count+1<=? AND character_count+?<=?))""",
+        (int(first_request), characters, now, owner_id, local_day, metered(),
          int(first_request), limits.jobs, limits.requests, characters,
          limits.characters)).rowcount
     if changed != 1:
@@ -201,9 +203,9 @@ def reserve(connect, session_hash: str, owner_id: int, characters: int,
         if daily_enabled():
             limits = effective_limits(db, owner_id)
             _reserve_daily(db, owner_id, characters, first_request, now, limits)
-        elif characters > limits.characters:
+        elif not metered() and characters > limits.characters:
             raise BudgetExhausted("auto_budget_exhausted")
-        if daily_enabled():
+        if daily_enabled() or metered():
             # The owner/day reservation is the dispatch limit. Keep this row
             # as a lifetime audit for the login; it must not cap a new day or
             # a user-confirmed increase to the daily limit.
@@ -266,7 +268,7 @@ def usage(connect, session_hash: str, owner_id: int) -> dict:
                      "limits": vars(limits), "used": used,
                      "remaining": {name: max(0, getattr(limits, name) - used[name])
                                    for name in used}}
-    return {"enabled": enabled(), "limits": vars(limits),
+    return {"metered":metered(),"enabled": enabled(), "limits": vars(limits),
             "used": {"jobs": row["synth_jobs"] if row else 0,
                      "requests": row["request_count"] if row else 0,
                      "characters": row["character_count"] if row else 0},

@@ -69,6 +69,63 @@ def hydrate(db, cid, owner_id, name, receipt):
     return channel.expand(db,cid,owner_id,bound[0]['entryId'],offset=receipt['offset'],expected_version=bound[0]['narrativeId'])
 
 
+def pack_context(history, memories, new_turn):
+    """Choose Chronicle content once across tool messages and passive projections."""
+    from .memory_v2_context import estimate_tokens
+    rows = [dict(row) for row in history]
+    seen = set()
+    tokens, slots = 1024, 5
+    def reserve(ids, text):
+        nonlocal tokens, slots
+        cost = estimate_tokens(text) + 12
+        if not ids or seen.intersection(ids) or not slots or cost > tokens:
+            return False
+        seen.update(ids)
+        tokens -= cost
+        slots -= 1
+        return True
+    boundary = len(rows) if new_turn else max((i for i,r in enumerate(rows) if r['role']=='user'),default=-1)
+    searches = []
+    for i in reversed(range(len(rows))):
+        row = rows[i]
+        if row['role'] != 'tool' or row.get('tool_name') not in NAMES:
+            continue
+        if i < boundary:
+            row['content'] = '{"state":"previous_turn"}'
+            continue
+        data = json.loads(row['content'])
+        if row['tool_name']==NAMES[0]:
+            searches.append((row,data))
+        elif data.get('view')=='NARRATIVE':
+            eid, text = data['entryId'], data['text']
+            # A page is addressed by exact Unicode offset. Retain the newest page;
+            # when it exceeds the shared allowance, expose the true next offset.
+            lo, hi = 0, len(text)
+            while lo < hi:
+                mid = (lo+hi+1)//2
+                if estimate_tokens(text[:mid])+12 <= tokens:
+                    lo = mid
+                else:
+                    hi = mid-1
+            if lo and reserve([eid],text[:lo]):
+                if lo<len(text):
+                    data.update(text=text[:lo],nextOffset=data['offset']+lo)
+            else:
+                data={'entryId':eid,'state':'superseded_or_budget_limited'}
+            row['content']=json.dumps(data,ensure_ascii=False)
+    included=[]
+    for item in memories:
+        if dict(item).get('channel')!='chronicle' or reserve(item['id'][10:].split(','),item['content']):
+            included.append(item)
+    for row,data in searches:
+        for block in data.get('blocks',[]):
+            if not reserve(block['entryIds'],block['text']):
+                block.pop('text')
+                block['textOmitted']='already_in_context_or_budget_limit'
+        row['content']=json.dumps(data,ensure_ascii=False)
+    return rows,included
+
+
 def refresh_history(db, cid, owner_id, history):
     result=[]
     for original in history:

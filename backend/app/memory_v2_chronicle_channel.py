@@ -6,6 +6,7 @@ Reads do not migrate, dispatch, review or repair anything.
 from datetime import datetime, timezone
 from heapq import nsmallest
 import unicodedata
+import re
 
 from . import memory_v2_derivation as m3, memory_v2_entries as entries
 from . import memory_v2_time_projection as p2
@@ -54,7 +55,7 @@ def expand(db, character_id, owner_id, entry_id, *, offset=0, limit=4096, expect
                 nextOffset=offset+limit if offset+limit < len(text) else None)
 
 
-def lexical_candidates(db, character_id, owner_id, query, *, limit=5, allow_partial_for=None):
+def lexical_candidates(db, character_id, owner_id, query, *, limit=5, allow_partial_for=None, chat_mentions=False):
     authorized(db, character_id, owner_id)
     if not isinstance(query, str) or len(query) > 1000 or type(limit) is not int or not 1 <= limit <= 20:
         raise ValueError('invalid_query')
@@ -76,6 +77,18 @@ def lexical_candidates(db, character_id, owner_id, query, *, limit=5, allow_part
                 values = lexical._field_values(metadata.read_draft(db, row['id'], character_id), vocab)
                 matched, counts, score, _ = lexical._score(values, query_items)
                 prose = [value for value in values if value['field'] in ('title', 'synopsis')]
+                if not matched and chat_mentions:
+                    # Match complete approved retrieval terms inside conversational CJK.
+                    # Short terms need corroboration in the title or an explicit title segment.
+                    title = _normalize(detail['title'])
+                    anchors = set(re.split(r'[、，,：:；;／/｜|「」『』\s]+', title))
+                    anchors.update(_normalize(v['text']) for v in values
+                                   if v['field'] == 'keywords' and v['kind'] == 'direct'
+                                   and (len(v['text']) >= 4 or _normalize(v['text']) in title))
+                    mentioned = [(a, True) for a in sorted(anchors) if len(a) >= 2
+                                 and _script(a) in ('han','kana') and a in _normalize(query)]
+                    if mentioned:
+                        matched, counts, score, _ = lexical._score(values, mentioned)
                 if (allow_partial_for is not None and row['id'] not in allow_partial_for
                         and len(terms) > 1 and matched < len(terms)):
                     # Lexical-only hits in hybrid need evidence for the whole
@@ -100,8 +113,8 @@ def lexical_candidates(db, character_id, owner_id, query, *, limit=5, allow_part
     return [entry_id for _, entry_id in nsmallest(limit, qualifying_hits())]
 
 
-def search(db, character_id, owner_id, query, *, now=None, limit=5, budget_tokens=1024):
-    selected = lexical_candidates(db, character_id, owner_id, query, limit=limit)
+def search(db, character_id, owner_id, query, *, now=None, limit=5, budget_tokens=1024, chat_mentions=False):
+    selected = lexical_candidates(db, character_id, owner_id, query, limit=limit, chat_mentions=chat_mentions)
     if not p2._table_exists(db, 'mv3_entries'):
         return {'blocks': [], 'mode': 'lexical', 'state': 'not_installed', 'vectorStatus': 'not_configured'}
     return project(db, character_id, owner_id, selected, now=now,

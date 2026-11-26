@@ -129,7 +129,10 @@ class ChronicleChatSupplement(EntryBase):
 
     def send(self, query, approved=True):
         payload = {'character_id':self.cid,'message':query,'model_profile_id':self.model}
-        if approved:
+        consent=self.client.put(f'/api/characters/{self.cid}/paid-memory-lookup',params={'enabled':approved})
+        self.assertEqual(consent.status_code,200)
+        if not approved:
+            # A stale client still transmitting its old per-message consent cannot authorize spending.
             payload['chronicle_supplement_max_microusd'] = semantic.BUDGET
         result = self.client.post('/api/chat/stream',json=payload)
         self.assertEqual(result.status_code,200,result.text)
@@ -145,6 +148,23 @@ class ChronicleChatSupplement(EntryBase):
         self.assertFalse(self.send(self.query,approved=False))
         self.assertTrue(self.send('银叶馆蓝灯指示牌'))
         self.assertEqual(self.calls, [])
+
+    def test_tool_and_passive_content_share_one_allowance(self):
+        from backend.app.memory_v2_chronicle_tools import NAMES,pack_context
+        body='界'*2000
+        passive=[{'id':'chronicle:a','content':'概述','channel':'chronicle'}]
+        rows=[{'role':'user','content':'此前的经历'},
+              {'role':'tool','tool_name':NAMES[0],'content':json.dumps({'blocks':[{'entryIds':['a'],'text':'概述'}]})},
+              {'role':'tool','tool_name':NAMES[1],'content':json.dumps({'view':'NARRATIVE','entryId':'a','text':body,'offset':0,'nextOffset':None})}]
+        history,selected=pack_context(rows,passive,False)
+        self.assertFalse(selected)
+        self.assertNotIn('text',json.loads(history[1]['content'])['blocks'][0])
+        page=json.loads(history[2]['content'])
+        self.assertEqual(page['text'],body[:page['nextOffset']])
+        self.assertEqual(page['nextOffset'],1012)
+        fresh,selected=pack_context(rows,[],True)
+        self.assertFalse(selected)
+        self.assertEqual(json.loads(fresh[2]['content']),{'state':'previous_turn'})
 
     def test_permanent_on_and_cancel_change_actual_requests_for_same_unrelated_query(self):
         self.assertFalse(self.send(self.unrelated,approved=False))

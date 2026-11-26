@@ -5,6 +5,7 @@ import json
 import time
 import uuid
 
+from .owner_billing import metered
 from . import memory_v2_derivation as core
 from . import memory_v2_fidelity as fidelity
 from . import memory_v2_jobs as jobs
@@ -49,8 +50,8 @@ def create_trial(db, character_id: int, model: str, price: dict, *,
                  max_requests: int = MAX_PILOT_CALLS) -> str:
     if not db.execute("SELECT 1 FROM characters WHERE id=? AND enabled=1", (character_id,)).fetchone():
         raise ValueError("trial_character_invalid")
-    if (not model or type(max_microusd) is not int or not 0 < max_microusd <= MAX_PILOT_MICROUSD
-            or type(max_requests) is not int or not 0 < max_requests <= MAX_PILOT_CALLS
+    if (not model or type(max_microusd) is not int or max_microusd <= 0 or (not metered() and max_microusd > MAX_PILOT_MICROUSD)
+            or type(max_requests) is not int or max_requests <= 0 or (not metered() and max_requests > MAX_PILOT_CALLS)
             or price.get("provider") not in ("openai_responses", "openai_embeddings") or price.get("model") != model
             or price.get("mode") != "standard" or not price.get("checkedAt")
             or not price.get("sourceUrl")):

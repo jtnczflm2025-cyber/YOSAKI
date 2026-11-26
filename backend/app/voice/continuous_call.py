@@ -194,6 +194,8 @@ class CallManager:
         rounds = min(limits.rounds, scribe["available_attempts"],
                      remaining.get("jobs", 0), remaining.get("requests", 0),
                      remaining.get("characters", 0))
+        if speech.get("metered") and scribe.get("enabled") and scribe.get("service_enabled"):
+            rounds = limits.rounds
         if self.single_button_conversation() is not None:
             rounds = min(rounds, 1)
         elif self.acceptance():
@@ -371,7 +373,7 @@ class CallManager:
             call = self._get(call_id, owner_id)
             if (call.character_id != character_id or call.pending_attempt or
                     call.pending_transcript or call.model_active or
-                    call.playback_active or call.stt_connections >= call.limits.rounds):
+                    call.playback_active or (not (call.daily_mode and auto_budget.metered()) and call.stt_connections >= call.limits.rounds)):
                 raise CallRejected("voice_call_stt_limit_or_busy")
             if call.daily_mode and call.interrupted_model_turn:
                 try:
@@ -437,7 +439,7 @@ class CallManager:
                     call.conversation_id != conversation_id or
                     call.model_profile_id != model_profile_id or
                     call.pending_transcript != (turn_id, text) or
-                    call.model_active or call.model_turns >= call.limits.rounds):
+                    call.model_active or (not (call.daily_mode and auto_budget.metered()) and call.model_turns >= call.limits.rounds)):
                 raise CallRejected("voice_call_model_limit_or_binding_invalid")
             try:
                 ledger = continuous_daily if call.daily_mode else continuous_batch
@@ -506,11 +508,11 @@ class CallManager:
             if (call.completed.get(turn_id) != message_id or call.playback_active or
                     requests < 1 or characters < 1):
                 raise CallRejected("voice_call_tts_limit_or_binding_invalid")
-            if not cached and call.tts_characters + characters > call.limits.tts_characters:
+            if not cached and (not (call.daily_mode and auto_budget.metered()) and call.tts_characters + characters > call.limits.tts_characters):
                 raise CallRejected("voice_call_tts_text_too_long")
             if self.headset_conversation() is not None and characters > (110 if call.model_turns == 1 else 50):
                 raise CallRejected("voice_call_tts_text_too_long")
-            if not cached and call.tts_requests + requests > call.limits.tts_requests:
+            if not cached and (not (call.daily_mode and auto_budget.metered()) and call.tts_requests + requests > call.limits.tts_requests):
                 raise CallRejected("voice_call_tts_request_limit")
             return call
 
@@ -536,7 +538,7 @@ class CallManager:
             call = self._get(call_id, owner_id)
             if (not call.playback_active or call.completed.get(turn_id) != message_id or
                     call.tts_dispatch_count >= call.tts_reserved_requests or
-                    call.tts_characters + characters > call.limits.tts_characters):
+                    (not (call.daily_mode and auto_budget.metered()) and call.tts_characters + characters > call.limits.tts_characters)):
                 raise CallRejected("voice_call_tts_dispatch_not_reserved")
             call.tts_dispatch_count += 1  # An attempted send is never refunded.
             call.tts_requests += 1
@@ -560,8 +562,8 @@ class CallManager:
             daily_continue = (self._daily_rounds(owner_id, call.session_hash)[0] > 0
                               if call.daily_mode else True)
             can_continue = (ledger_continue and daily_continue and
-                            call.stt_connections < call.limits.rounds and
-                            call.model_turns < call.limits.rounds and
+                            (call.daily_mode and auto_budget.metered() or call.stt_connections < call.limits.rounds) and
+                            (call.daily_mode and auto_budget.metered() or call.model_turns < call.limits.rounds) and
                             time.monotonic() - call.opened < call.limits.seconds)
             self._record(call, "playback_drained", turn_id=turn_id,
                          message_id=message_id, can_continue=can_continue)
@@ -606,8 +608,8 @@ class CallManager:
             # An interrupt may consume the final model or Scribe allowance.
             # Tell the browser before it mounts another microphone instance;
             # the next reserve still performs its own authoritative check.
-            local_room = (call.stt_connections < call.limits.rounds and
-                          call.model_turns < call.limits.rounds and
+            local_room = ((call.daily_mode and auto_budget.metered() or call.stt_connections < call.limits.rounds) and
+                          (call.daily_mode and auto_budget.metered() or call.model_turns < call.limits.rounds) and
                           time.monotonic() - call.opened < call.limits.seconds)
             try:
                 if call.daily_mode:

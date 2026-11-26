@@ -492,7 +492,8 @@ def install(app, connect, now, model_text, drive_ids):
     @app.on_event("startup")
     async def start_psychology():
         from .background_tasks import enabled
-        if not enabled():
+        from .owner_billing import metered
+        if not (enabled() or metered()):
             return
         service.paused = False
         async def poll():

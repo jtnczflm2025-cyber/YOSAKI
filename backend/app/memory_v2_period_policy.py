@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from uuid import uuid4
+from .owner_billing import metered
 
 POLICY = 'chronicle-period-clock-v2'
 FILE = 'chronicle-period-authority.json'
@@ -25,7 +26,19 @@ def write(path, value):
         tmp.unlink(missing_ok=True)
 
 
+def effective_grant(grant):
+    if metered() and grant.get('enabled') and not grant.get('revoked') and grant.get('scope') == SCOPE:
+        return {**grant, 'billingMode': 'metered', 'endsAt': None, 'perTask': None, 'perDay': None, 'total': None}
+    return grant
+
+
 def valid(g, now):
+    if metered() and g.get('billingMode') == 'metered':
+        try:
+            return bool(g.get('policy') == POLICY and g.get('scope') == SCOPE and g.get('approvalId')
+                        and datetime.fromisoformat(g['startsAt']) <= now)
+        except (ValueError, KeyError, TypeError):
+            return False
     limits = [g.get(k) for k in ('perTask', 'perDay', 'total')]
     if (g.get('policy') != POLICY or g.get('scope') != SCOPE or not g.get('approvalId')
             or not all(type(limit) is int and limit > 0 for limit in limits)
@@ -58,6 +71,8 @@ def balance(db, cid, g, day):
 
 
 def decision(db, cid, grant, day, reserve):
+    if metered() and grant.get('billingMode') == 'metered':
+        return None
     used = balance(db, cid, grant, day)
     if used['spent'] + used['reserved'] + reserve > grant['total']:
         return 'total_budget'
@@ -70,7 +85,7 @@ def authority_for(db):
     path = db.execute("PRAGMA database_list").fetchone()[2]
     try:
         value=read(Path(path).parent / FILE) if path else {}
-        return value if isinstance(value,dict) else {}
+        return effective_grant(value) if isinstance(value,dict) else {}
     except (OSError,ValueError):
         return {}
 

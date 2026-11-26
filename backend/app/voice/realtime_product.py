@@ -70,6 +70,8 @@ class ProductOutputGate:
         return None
 
     def check_daily_budget(self, session, characters: int) -> None:
+        if auto_budget.metered():
+            return  # reserve() still verifies identity and records the actual dispatch.
         remaining = auto_budget.usage(
             self.connect, session["token_hash"], session["id"])["daily"]["remaining"]
         if remaining["jobs"] < 1 or remaining["requests"] < 1 or remaining["characters"] < characters:

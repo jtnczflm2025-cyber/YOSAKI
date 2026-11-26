@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
+from ..owner_billing import metered
+
 import os
 import re
 import sqlite3
@@ -184,11 +186,11 @@ def usage(connect, owner_id: int) -> dict:
         available_attempts = (min(remaining_attempts, remaining_connections,
                                   remaining_audio_bytes // ATTEMPT_AUDIO_BYTES)
                               if user_enabled and service_ready() else 0)
-    return {"service_enabled": service_ready(), "enabled": user_enabled,
+    return {"metered":metered(),"service_enabled": service_ready(), "enabled": user_enabled,
             "limits": vars(limits), "revision": revision, "local_day": day,
             "reset_at": reset_at, "used": used,
             "per_attempt_audio_seconds": ATTEMPT_AUDIO_SECONDS,
-            "available_attempts": available_attempts,
+            "available_attempts": (int(user_enabled and service_ready()) if metered() else available_attempts),
             "remaining": {"attempts": remaining_attempts,
                           "connections": remaining_connections,
                           "audio_seconds": remaining_audio_bytes / PCM_BYTES_PER_SECOND}}
@@ -226,9 +228,9 @@ def reserve(connect, owner_id: int, attempt_id: str, *, batch_id: str | None = N
         changed = db.execute("""UPDATE voice_scribe_owner_day_budget SET
             attempts=attempts+1,connections=connections+1,
             reserved_audio_bytes=reserved_audio_bytes+?,updated_at=?
-            WHERE owner_id=? AND local_day=? AND attempts+1<=? AND connections+1<=?
-              AND reserved_audio_bytes+?<=?""",
-            (ATTEMPT_AUDIO_BYTES, now, owner_id, day, limits.attempts,
+            WHERE owner_id=? AND local_day=? AND (? OR (attempts+1<=? AND connections+1<=?
+              AND reserved_audio_bytes+?<=?))""",
+            (ATTEMPT_AUDIO_BYTES, now, owner_id, day, metered(), limits.attempts,
              limits.connections, ATTEMPT_AUDIO_BYTES,
              limits.audio_seconds * PCM_BYTES_PER_SECOND)).rowcount
         if changed != 1:

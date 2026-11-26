@@ -117,7 +117,8 @@ def create(db, cid, owner_id, entry_ids, expected_plan, approval_id, price, max_
         return {'jobs':[r['id'] for r in prior], 'reused':True, 'approvalId':approval_id}
     bound = plan(db,cid,owner_id,entry_ids)
     if bound['planHash'] != expected_plan: raise ValueError('embedding_plan_expired')
-    if type(max_microusd) is not int or not bound['maxMicrousd'] <= max_microusd <= 5_000_000:
+    from .owner_billing import metered
+    if not metered() and (type(max_microusd) is not int or not bound['maxMicrousd'] <= max_microusd <= 5_000_000):
         raise ValueError('embedding_budget_exhausted')
     active = db.execute("""SELECT read_set_json FROM mv3_jobs WHERE character_id=?
         AND json_extract(read_set_json,'$.version')=? AND status IN ('queued','running','paused','unknown')""",
@@ -286,7 +287,8 @@ def create_query(db,cid,owner,query,price,max_microusd):
     if not isinstance(query,str) or not query.strip() or len(query.encode('utf-8'))>1200:
         raise ValueError('embedding_query_invalid')
     size=len(processing._canonical([query]).encode('utf-8'))
-    if not cost(size)<=max_microusd<=164: raise ValueError('embedding_budget_exhausted')
+    from .owner_billing import metered
+    if not metered() and not cost(size)<=max_microusd<=164: raise ValueError('embedding_budget_exhausted')
     prior=db.execute("""SELECT id FROM mv3_jobs WHERE character_id=?
         AND json_extract(read_set_json,'$.version')=? AND json_extract(read_set_json,'$.queryHash')=?
         AND json_extract(read_set_json,'$.realConfig.ownerId')=? ORDER BY rowid DESC LIMIT 1""",

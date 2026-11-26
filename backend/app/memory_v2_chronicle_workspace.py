@@ -282,7 +282,7 @@ def install(app, connect, authenticate, *, allowed_origins=(), provider_factory=
         # Legacy/mock installers without this hook retain their old contract.
         rates = rate_status() if rate_status else {'ratesCurrent': True}
         reason = disabled_reason if not installed else (
-            None if rates['ratesCurrent'] else 'chronicle_daily_rates_verification_required')
+            None if rates['ratesCurrent'] or rates.get('metered') else 'chronicle_daily_rates_verification_required')
         return {**rates, 'enabled': reason is None, 'reason': reason}
 
     @router.get('/calendar-summaries')

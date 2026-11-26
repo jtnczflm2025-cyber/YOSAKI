@@ -100,6 +100,17 @@ class DailyScribeTest(unittest.TestCase):
                       "language_code": "auto", "attempt_id": attempt})
         return ws.receive_json(), attempt
 
+    def test_metered_keeps_usage_and_rejects_duplicate_attempt(self):
+        with patch.dict(os.environ, {"YOSAKI_RUN_MODE": "development", "YOSAKI_OWNER_BILLING": "metered"}):
+            self.enable()
+            attempts = scribe_budget.DEFAULT.attempts + 1
+            for _ in range(attempts):
+                identity = uuid.uuid4().hex
+                scribe_budget.reserve(self.connect, 1, identity)
+            self.assertEqual(scribe_budget.usage(self.connect, 1)["used"]["attempts"], attempts)
+            with self.assertRaisesRegex(scribe_budget.BudgetExhausted, "reused"):
+                scribe_budget.reserve(self.connect, 1, identity)
+
     def test_default_closed_and_explicit_enable(self):
         self.assertFalse(scribe_budget.settings(self.connect, 1)["enabled"])
         with self.client.websocket_connect("/api/voice/scribe-draft/ws",

@@ -19,6 +19,8 @@ VERSION = 'chronicle_semantic_supplement_v1'
 TARGET = 'chronicle:semantic-supplement'
 FIELDS = ['synopsis', 'title']
 INPUT_CAP, OUTPUT_CAP, QUERY_BYTES = 4096, 1024, 1200
+from .owner_billing import metered
+
 BUDGET = 37000
 CHAT_WAIT_SECONDS = 12  # Legacy/default chat policy; not a mutable user preference.
 CHAT_WAIT_OPTIONS = (12, 30)
@@ -265,7 +267,7 @@ class Search:
             count = adapter.count_input(payload)
         except Exception:
             raise ValueError('semantic_count_failed') from None
-        if not 0 < count <= INPUT_CAP or quote(count) > remaining:
+        if not 0 < count <= INPUT_CAP or (not metered() and quote(count) > remaining):
             raise ValueError('semantic_budget_exceeded')
         self.check_session()
         with self.connect() as db:
@@ -344,10 +346,13 @@ class ChatSearch(Search):
 
     def corpus(self, db):
         channel.authorized(db, self.cid, self.owner)
+        consent=db.execute('SELECT paid_enabled FROM chat_memory_lookup_preferences WHERE character_id=?',(self.cid,)).fetchone()
+        if not (bool(consent[0]) if consent else metered()):
+            raise ValueError('chronicle_role_supplement_disabled')
         settings = db.execute('SELECT memory_enabled FROM context_settings WHERE character_id=?', (self.cid,)).fetchone()
         if settings is not None and not settings['memory_enabled']:
             raise ValueError('chronicle_memory_disabled')
-        if embedding.cached_search(db, self.cid, self.owner, self.query, limit=3, budget_tokens=1024)['blocks']:
+        if embedding.cached_search(db, self.cid, self.owner, self.query, limit=3, budget_tokens=1024,chat_mentions=True)['blocks']:
             raise ValueError('semantic_ordinary_results_available')
         result = []
         for eid, text, fingerprint, vector in vectors._qualified_vectors(db, self.cid, self.owner, embedding.MODEL):

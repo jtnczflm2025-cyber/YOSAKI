@@ -182,6 +182,8 @@ class PeriodSync:
                          startsAt=now.isoformat(),endsAt=(now+timedelta(days=days)).isoformat(),
                          perTask=per_task,perDay=per_day,total=total,recall=recall,enabled=True,
                          futurePublished=future,entryIds=ids,revoked=False,baseline={})
+            if policy.metered():
+                grant.update(billingMode='metered',endsAt=None,perTask=None,perDay=None,total=None)
             policy.write(self.path,grant)
         self.wake()
 
@@ -239,7 +241,7 @@ class PeriodSync:
         if not self.path.is_file():
             return {}
         grant=json.loads(self.path.read_text(encoding='utf-8-sig'))
-        return grant if grant.get('version')==KIND else {}
+        return policy.effective_grant(grant) if grant.get('version')==KIND else {}
 
     def view(self,cid,owner):
         with self.connect() as db:
@@ -269,7 +271,7 @@ class PeriodSync:
             bounded=bool(matches and policy.valid(grant,self.clock()) and not grant.get('revoked'))
             return dict(check=policy.read(self.check_path) if matches else {},bounded=bounded,
                         recall=bool(bounded and grant.get('recall')),
-                        budget=({**{k:grant.get(k) for k in ('perTask','perDay','total','endsAt')},
+                        budget=({**{k:grant.get(k) for k in ('perTask','perDay','total','endsAt','billingMode')},
                                  **policy.balance(db,cid,grant,self.clock().date().isoformat())} if matches else {}),
                         enabled=bool(enabled),configured=(grant.get("characterId"),grant.get("ownerId"))==(cid,owner),periods=result,error=self.error if enabled else None)
 
@@ -351,12 +353,13 @@ class PeriodSync:
                 scope=proc._scope(cid,'period',_period_key(level_of(period),period,basis,480),['digest'])
                 proc._block_overlaps(db,cid,scope,['digest'])
             day=self.clock().date().isoformat()
-            maximum=min(maximum,grant['perTask'])
+            if not (policy.metered() and grant.get('billingMode')=='metered'):
+                maximum=min(maximum,grant['perTask'])
             if policy.decision(db,cid,grant,day,maximum):return
             tid=trials.create_trial(db,cid,MODEL,price,max_microusd=maximum,max_requests=1)
             read={'realConfig':{'ownerId':owner,'trialId':tid},'period':period,'fingerprint':fp,
                   'approvalId':grant['approvalId'],'budgetDay':day,
-                  'grantTerms':{k:grant.get(k) for k in ('policy','scope','startsAt','endsAt','perTask','perDay','total','futurePublished','recall')},
+                  'grantTerms':{k:grant.get(k) for k in ('policy','scope','startsAt','endsAt','perTask','perDay','total','billingMode','futurePublished','recall')},
                   'scopeHash':proc._hash(grant.get('entryIds',[])),'members':[i for i,_ in items],'requestHash':req_hash,'modelId':grant['modelId']}
             jid=proc.create(db,cid,'period',target,['digest'],read,origin='scheduler',rule_version=KIND,
                             input_version=KIND,execution_kind=KIND)

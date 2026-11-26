@@ -1,6 +1,8 @@
 """Phase 4: evidence-backed, user-confirmed short-term feedback for free activity."""
 from __future__ import annotations
 
+from .owner_billing import metered
+
 import asyncio
 import hashlib
 import json
@@ -246,7 +248,7 @@ class FeedbackService:
             for session in sessions:
                 self.collect_session(db, session)
             ready = db.execute("""SELECT DISTINCT s.id FROM awakening_sessions s JOIN feedback_activities_v4 f ON f.session_id=s.id
-                                  WHERE f.status='pending_review' AND s.feedback_review_calls_used<s.feedback_review_limit""").fetchall()
+                                  WHERE f.status='pending_review' AND s.feedback_review_limit>0 AND (? OR s.feedback_review_calls_used<s.feedback_review_limit)""",(metered(),)).fetchall()
         for item in ready:
             if item["id"] not in self.running_sessions:
                 self.running_sessions.add(item["id"])
@@ -284,7 +286,7 @@ class FeedbackService:
             with self.connect() as db:
                 session = db.execute("SELECT * FROM awakening_sessions WHERE id=?", (session_id,)).fetchone()
                 rows = db.execute("SELECT * FROM feedback_activities_v4 WHERE session_id=? AND status='pending_review' ORDER BY created_at,id LIMIT 10", (session_id,)).fetchall()
-                if not session or not rows or (not manual and session["feedback_review_calls_used"] >= session["feedback_review_limit"]):
+                if not session or not rows or (not manual and (not session["feedback_review_limit"] or (not metered() and session["feedback_review_calls_used"] >= session["feedback_review_limit"]))):
                     return
                 profile = db.execute("SELECT * FROM model_profiles WHERE id=? AND enabled=1", (session["model_profile_id"],)).fetchone()
                 if not profile:
@@ -292,7 +294,7 @@ class FeedbackService:
                     return
                 limit = min(token_cap or session["feedback_review_tokens"], profile["max_tokens"])
                 db.execute("UPDATE awakening_sessions SET feedback_review_calls_used=feedback_review_calls_used+1,feedback_review_output_used=feedback_review_output_used+? WHERE id=?", (limit, session_id))
-                db.execute("UPDATE feedback_activities_v4 SET status='reviewing',version=version+1 WHERE session_id=? AND status='pending_review'", (session_id,))
+                db.executemany("UPDATE feedback_activities_v4 SET status='reviewing',version=version+1 WHERE id=? AND status='pending_review'", ((row["id"],) for row in rows))
                 request = [{"feedbackId": row["id"], "title": row["title"], "objectiveOutcome": row["objective_outcome"],
                             "endReason": row["end_reason"], "evidence": json.loads(row["evidence_json"]), "expectedEnjoyment": row["expected_enjoyment"]} for row in rows]
                 character = db.execute("SELECT name,system_prompt FROM characters WHERE id=?", (session["character_id"],)).fetchone()
@@ -349,7 +351,7 @@ def install(app, connect, now, model_text, snapshot, apply_regulation, drive_ids
     @app.on_event("startup")
     async def start_feedback_worker():
         from .background_tasks import enabled
-        if not enabled():
+        if not (enabled() or metered()):
             return
         async def poll():
             while True:
@@ -428,7 +430,7 @@ def install(app, connect, now, model_text, snapshot, apply_regulation, drive_ids
             ids = json.loads(row["source_event_ids_json"])
             ids.append(f"resolution:{payload.requestId}")
             session = db.execute("SELECT feedback_review_limit,feedback_review_calls_used FROM awakening_sessions WHERE id=?", (row["session_id"],)).fetchone()
-            next_status = "pending_review" if session and session["feedback_review_calls_used"] < session["feedback_review_limit"] else "ready"
+            next_status = "pending_review" if session and session["feedback_review_limit"] and (metered() or session["feedback_review_calls_used"] < session["feedback_review_limit"]) else "ready"
             db.execute("UPDATE feedback_activities_v4 SET evidence_json=?,source_event_ids_json=?,objective_outcome=?,status=?,version=version+1,updated_at=? WHERE id=?", (
                 json.dumps(evidence, ensure_ascii=False), json.dumps(ids), "partial" if payload.outcome == "success" else "failure", next_status, now(), feedback_id))
             result = service.view(service.activity(db, character_id, feedback_id))

@@ -125,6 +125,7 @@ onBeforeUnmount(()=>narrowWorkspace.removeEventListener('change',closeNavigation
 const model = ref('YOSAKI · demo')
 const modelProfileId = ref<number | null>(null)
 const modelProfiles = ref<ModelProfile[]>([])
+const chronicleMetered = ref(false)
 const chronicleChatCap = ref(0)
 const memoryLookupProgress = ref("")
 const chronicleChatConsent = ref(false)
@@ -317,10 +318,11 @@ watch([callId,callPhase,bargeInRequested,callPlaybackStarted], ([id,phase,enable
 })
 type BudgetCounts = { jobs:number; requests:number; characters:number }
 type DailyAutoBudget = { local_day:string; reset_at:string; limits:BudgetCounts; used:BudgetCounts; remaining:BudgetCounts }
-const sessionAutoBudget = ref<{limits:BudgetCounts; used:BudgetCounts}|null>(null)
+const sessionAutoBudget = ref<{metered?:boolean;limits:BudgetCounts; used:BudgetCounts}|null>(null)
 const dailyAutoBudget = ref<DailyAutoBudget|null>(null)
 const autoBudgetDescription = computed(() => {
   const session = sessionAutoBudget.value
+  if (session?.metered) return "自动朗读按量使用；已发出 "+session.used.requests+" 个请求。";
   const sessionCopy = session
     ? `本次登录剩余 ${Math.max(0,session.limits.jobs-session.used.jobs)} 次、${Math.max(0,session.limits.requests-session.used.requests)} 个请求、${Math.max(0,session.limits.characters-session.used.characters)} 字。`
     : '每次登录最多自动合成 2 次、2 个请求、160 字。'
@@ -336,7 +338,7 @@ async function refreshAutoBudget() {
     const response = await fetch('/api/voice/auto-budget', {credentials:'same-origin'})
     if (!response.ok) { sessionAutoBudget.value = null; dailyAutoBudget.value = null; return }
     const result = await response.json()
-    sessionAutoBudget.value = result.limits && result.used ? {limits:result.limits,used:result.used} : null
+    sessionAutoBudget.value = result.limits && result.used ? {metered:result.metered,limits:result.limits,used:result.used} : null
     dailyAutoBudget.value = result.daily ?? null
   } catch { sessionAutoBudget.value = null; dailyAutoBudget.value = null }
 }
@@ -862,8 +864,9 @@ async function loadChronicleChatStatus() {
   chronicleChatCap.value = 0
   if (!chronicleAvailable || !authenticated.value) return
   try {
-    const status = await api<{enabled:boolean;maxMicrousd:number;workspaceEnabled?:boolean;reason?:string;ratesVerifiedDate?:string;utcDate?:string}>('/api/chat/chronicle-supplement-status')
+    const status = await api<{enabled:boolean;maxMicrousd:number;metered?:boolean;workspaceEnabled?:boolean;reason?:string;ratesVerifiedDate?:string;utcDate?:string}>('/api/chat/chronicle-supplement-status')
     if (!authenticated.value) return
+    chronicleMetered.value = Boolean(status.metered)
     chronicleChatInstalled.value = status.workspaceEnabled ?? chronicleAvailable
     if (status.enabled) chronicleChatCap.value = status.maxMicrousd
 
@@ -1247,7 +1250,7 @@ onBeforeUnmount(() => { navigator.mediaDevices?.removeEventListener?.('devicecha
               <section v-show="chatPanel==='read'"><div v-if="isolatedAutoRead" class="voice-auto-controls"><label><input v-model="autoReadEnabled" type="checkbox" @change="!autoReadEnabled && stopAutoRead()"/>回复完成后自动朗读（默认关闭）</label><button v-if="autoReadMessageId" type="button" @click="stopAutoRead">停止语音</button><span>{{autoBudgetDescription}} 设备识别只填写输入框，请核对后自行发送。自动朗读仅用于演示回复或已完成展示核验的 ChatGPT Plan 回复。</span></div></section>
               <section v-show="chatPanel==='memory'">
                 <p>阿夜可以自行查找已发布的记忆、阅读精修记录并接着回答。生成期间可以随时停止。</p>
-                <label><input type="checkbox" :checked="chronicleChatConsent" :disabled="isStreaming || (!chronicleChatAvailable && !chronicleChatConsent)" @change="setRoleLookup(($event.target as HTMLInputElement).checked)"/> 为当前角色开启付费补查（每次最多 USD 0.037）</label>
+                <label><input type="checkbox" :checked="chronicleChatConsent" :disabled="isStreaming || (!chronicleChatAvailable && !chronicleChatConsent)" @change="setRoleLookup(($event.target as HTMLInputElement).checked)"/> 为当前角色开启付费补查（{{chronicleMetered ? "按量使用" : "每次最多 USD 0.037"}}）</label>
                 <p v-if="!chronicleChatAvailable" role="status">{{chronicleChatUnavailableText}}</p>
                 <p>普通召回为空且模型合资格时，补查可发送本次问题与候选的已确认标题、梗概。关闭后仍可本地查阅。</p>
                 <label>本条补查等待上限<select v-model="chronicleChatWaitSeconds" :disabled="!chronicleChatConsent || isStreaming"><option :value="12">12 秒</option><option :value="30">30 秒</option></select></label>

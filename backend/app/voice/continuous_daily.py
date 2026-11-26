@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from ..owner_billing import metered
+
 import json
 import re
 import sqlite3
@@ -211,6 +213,8 @@ def _available_rounds_in_transaction(db: sqlite3.Connection, owner_id: int,
         raise DailyCallRejected("voice_call_daily_budget_unavailable") from exc
     if not scribe_enabled or not scribe_budget.service_ready():
         return 0
+    if metered():
+        return _limits(db, owner_id)[0].rounds
     scribe_day, _ = scribe_budget.period()
     stt = db.execute("""SELECT attempts,connections,reserved_audio_bytes
         FROM voice_scribe_owner_day_budget WHERE owner_id=? AND local_day=?""",
@@ -314,15 +318,15 @@ def claim(db: sqlite3.Connection, call_id: str, owner_id: int,
         if (latest['id'] if latest else None) != row["last_message_id"]:
             raise DailyCallRejected("voice_call_conversation_changed")
         column, amount, limit = "model_turns", 1, limits.rounds
-    elif action == "tts" and requests == 1 and 0 < characters <= limits.tts_characters:
-        if row["tts_characters"] + characters > limits.tts_characters:
+    elif action == "tts" and requests == 1 and characters > 0 and (metered() or characters <= limits.tts_characters):
+        if not metered() and row["tts_characters"] + characters > limits.tts_characters:
             raise DailyCallRejected("voice_call_tts_limit")
         column, amount, limit = "tts_requests", 1, limits.tts_requests
     else:
         raise DailyCallRejected("voice_call_claim_invalid")
     changed = db.execute(f"""UPDATE voice_continuous_daily_calls
         SET {column}={column}+? WHERE call_id=? AND owner_id=? AND ended_at IS NULL
-        AND {column}+?<=?""", (amount, call_id, owner_id, amount, limit)).rowcount
+        AND (? OR {column}+?<=?)""", (amount, call_id, owner_id, metered(), amount, limit)).rowcount
     if changed != 1:
         raise DailyCallRejected("voice_call_limit_exhausted")
     if action == "tts":
@@ -388,9 +392,9 @@ def can_continue(connect, call_id: str, owner_id: int) -> bool:
         limits = _row_limits(row)
         return bool(row["ended_at"] is None and
                     time.time() - row["started_at"] < limits.seconds and
-                    row["stt_connections"] < limits.rounds and
+                    (metered() or (row["stt_connections"] < limits.rounds and
                     row["model_turns"] < limits.rounds and
-                    row["tts_requests"] < limits.tts_requests)
+                    row["tts_requests"] < limits.tts_requests)))
 
 
 def conversation_locked(db: sqlite3.Connection, conversation_id: int) -> bool:

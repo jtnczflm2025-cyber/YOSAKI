@@ -23,16 +23,17 @@ function startContinuousCapture() {
   void start(continuousFakeCapture)
 }
 const dailyMode = import.meta.env.VITE_YOSAKI_SCRIBE_DAILY === '1'
-type ScribeUsage = {enabled:boolean;service_enabled:boolean;limits:{attempts:number;connections:number;audio_seconds:number};
+type ScribeUsage = {metered?:boolean;enabled:boolean;service_enabled:boolean;limits:{attempts:number;connections:number;audio_seconds:number};
   remaining:{attempts:number;connections:number;audio_seconds:number};available_attempts:number;
   per_attempt_audio_seconds:number;reset_at:string}
 const dailyUsage = ref<ScribeUsage|null>(null)
 const dailyReady = computed(() => !dailyMode || Boolean(dailyUsage.value?.enabled &&
-  dailyUsage.value.service_enabled && dailyUsage.value.available_attempts > 0))
+  dailyUsage.value.service_enabled && (dailyUsage.value.metered || dailyUsage.value.available_attempts > 0)))
 const dailyHint = computed(() => {
   if (!dailyMode) return ''
   if (!dailyUsage.value) return '录音额度暂不可读取；麦克风保持关闭。'
   if (!dailyUsage.value.enabled) return 'Scribe 麦克风未开启；可在语音设置中主动开启。'
+  if (dailyUsage.value.metered) return "录音按实际用量计量，可随时停止。";
   const r = dailyUsage.value.remaining
   return `今日剩余 ${r.attempts} 次尝试、${r.connections} 条连接、${r.audio_seconds} 秒预留音频；按每次预留 ${dailyUsage.value.per_attempt_audio_seconds} 秒，当前最多还能录音 ${dailyUsage.value.available_attempts} 次。香港时间零点重置。`
 })

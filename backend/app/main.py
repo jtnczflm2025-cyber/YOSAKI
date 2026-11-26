@@ -1635,6 +1635,9 @@ def voice_call_history(history):
 
 
 def build_messages(character, prompt_blocks, history, current=None, memories=(), summary="", history_limit=None, settings=None, include_provider_state=False, desire_advisory=""):
+    from .memory_v2_chronicle_tools import pack_context
+    selected = select_history(history,settings or {"window_mode":"legacy","history_limit":history_limit if history_limit is not None else len(history)})
+    selected, memories = pack_context(selected, memories, current is not None)
     ordered = sorted((b for b in prompt_blocks if b["enabled"]), key=lambda b: (b["order_index"], b["id"]))
     def section(position):
         return [f"## {b['name']}\n{b['content']}" for b in ordered if b["injection_position"] == position]
@@ -1657,7 +1660,6 @@ def build_messages(character, prompt_blocks, history, current=None, memories=(),
     dynamic.extend(section("before_history"))
     if dynamic:
         messages.append({"role": "system", "content": "\n\n".join(dynamic)})
-    selected=select_history(history,settings or {"window_mode":"legacy","history_limit":history_limit if history_limit is not None else len(history)})
     for row in selected:
         if row["role"] in ("user", "assistant"):
             item = {"role": row["role"], "content": row["content"] or ""}
@@ -1713,7 +1715,7 @@ def _memory_context(db, character_id, conversation_id, topic="", *, chronicle_ow
             from . import memory_v2_chronicle_curation as curation
             from . import memory_v2_chronicle_embedding as embeddings
             try:
-                recalled = embeddings.cached_search(db, character_id, chronicle_owner_id, topic, limit=3, budget_tokens=1024)
+                recalled = embeddings.cached_search(db, character_id, chronicle_owner_id, topic, limit=3, budget_tokens=1024,chat_mentions=True)
                 supplemented = []
                 if not recalled['blocks'] and supplement:
                     from . import memory_v2_chronicle_vectors as vectors
@@ -1758,7 +1760,8 @@ def scoped_tool_history(db,cid,character_id,owner_id,rows):
 
 
 def finalize_chat_context(db,cid,profile,request_messages,history,current_id,settings,memories,summary,advisory,chronicle,tools,draft=None):
-    selected=select_history(history,settings)
+    from .memory_v2_chronicle_tools import pack_context
+    selected,memories=pack_context(select_history(history,settings),memories,current_id is not None or draft is not None)
     request_messages=chat_attachments.enrich(db,request_messages,selected,current_id,profile,cid)
     if draft:
         files=chat_attachments.check(db,draft.character_id,draft.attachment_ids,profile)
@@ -1771,7 +1774,19 @@ def finalize_chat_context(db,cid,profile,request_messages,history,current_id,set
         request_messages[-1]['content']=chat_attachments.content_for(text,files,profile)
     policy=db.execute('SELECT * FROM chat_context_policy WHERE character_id=?',(settings.get('character_id'),)).fetchone()
     request_messages,budget=chat_context.constrain(request_messages,tools,profile,dict(policy) if policy else None)
+    included_ids={eid for item in memories if dict(item).get('channel')=='chronicle'
+                  for eid in item['id'].removeprefix('chronicle:').split(',')}
+    chronicle=dict(chronicle,selectionDetails=[
+        dict(item,included=False,reason='superseded_or_shared_budget') if item.get('included') and item['entryId'] not in included_ids else item
+        for item in chronicle.get('selectionDetails',[])])
     sources=chat_context.trace(db,cid,settings,memories,summary,advisory,chronicle)
+    from .memory_v2_chronicle_tools import NAMES
+    sources['chronicle_tool_pages']=[]
+    for message in request_messages:
+        if message['role']=='tool' and message.get('name')==NAMES[1]:
+            page=json.loads(message['content'])
+            if page.get('view')=='NARRATIVE' and page.get('text'):
+                sources['chronicle_tool_pages'].append({key:page.get(key) for key in ('entryId','versionId','offset','nextOffset')})
     sources['history_ids']=[message.pop('_source_id') for message in request_messages if '_source_id' in message]
     covered=chat_context.summary(db,cid)
     if covered:sources['history_ids']=list(dict.fromkeys(sources['history_ids']+[r['id'] for r in json.loads(covered['coverage_json'])]))
@@ -1779,6 +1794,9 @@ def finalize_chat_context(db,cid,profile,request_messages,history,current_id,set
     sources['history_refs']=[{'id':r['id'],'sha256':chat_history.digest(r['content'] or '')} for r in chat_history.rows(db,cid) if r['id'] in sources['history_ids']]
     sources['budget']=budget
     return request_messages,sources
+
+
+from .owner_billing import metered
 
 
 def chronicle_rates_status():
@@ -1789,7 +1807,7 @@ def chronicle_rates_status():
                    + timedelta(days=1)).isoformat()
     except (TypeError, ValueError):
         expires = None
-    return {'ratesCurrent': checked == today, 'ratesVerifiedDate': checked,
+    return {'metered':metered(),'ratesCurrent': checked == today, 'ratesVerifiedDate': checked,
             'utcDate': today, 'expiresAt': expires}
 
 
@@ -1802,9 +1820,9 @@ def chronicle_chat_supplement_state():
         if os.getenv(flag) != '1'), None)
     if reason is None and 'chronicle_provider' not in globals():
         reason = 'chronicle_provider_unavailable'
-    if reason is None and not state['ratesCurrent']:
+    if reason is None and not metered() and not state['ratesCurrent']:
         reason = 'chronicle_daily_rates_verification_required'
-    return {**state, 'enabled': reason is None, 'reason': reason,
+    return {**state, 'metered':metered(), 'enabled': reason is None, 'reason': reason,
             'workspaceEnabled': os.getenv('YOSAKI_CHRONICLE_WORKSPACE') == '1'}
 
 
@@ -1816,7 +1834,7 @@ def chronicle_chat_supplement_enabled():
 def paid_memory_lookup(character_id: int):
     with connect() as db:
         row=db.execute('SELECT paid_enabled FROM chat_memory_lookup_preferences WHERE character_id=?',(character_id,)).fetchone()
-        return {'enabled':bool(row and row[0])}
+        return {'enabled':bool(row[0]) if row else metered()}
 
 
 @app.put('/api/characters/{character_id}/paid-memory-lookup')
@@ -2509,7 +2527,7 @@ if os.getenv('YOSAKI_CHRONICLE_WORKSPACE', '0') == '1':
         # A separate explicit deployment flag enables paid UI actions; merely
         # enabling reading/context cannot spend money or inspect credentials.
         checked_date = os.getenv('YOSAKI_CHRONICLE_PRICES_VERIFIED_DATE')
-        if checked_date != datetime.now(timezone.utc).date().isoformat():
+        if not metered() and checked_date != datetime.now(timezone.utc).date().isoformat():
             raise ValueError('chronicle_daily_rates_verification_required')
         return chronicle_profile_key(model_id), {
             'provider':'openai_responses','model':'gpt-6.1-sol','mode':'standard',
@@ -2719,8 +2737,7 @@ async def chat_stream(payload: ChatInput, request: Request = None) -> StreamingR
         db.execute('UPDATE chat_attempts SET origin_message_id=? WHERE id=?',(user_message_id,generation_id))
         if request and not payload.voice_call_id and not payload.reuse_last_user:
             preference=db.execute('SELECT paid_enabled FROM chat_memory_lookup_preferences WHERE character_id=?',(payload.character_id,)).fetchone()
-            if preference is not None:
-                payload.chronicle_supplement_max_microusd=37000 if preference[0] else 0
+            payload.chronicle_supplement_max_microusd=37000 if (bool(preference[0]) if preference else metered()) else None
         if payload.chronicle_supplement_max_microusd:
             db.execute('UPDATE chat_attempts SET parameters_json=? WHERE id=?',
                 (json.dumps({'chronicleSupplement': chronicle_wait_metadata(payload)}), generation_id))
@@ -2755,7 +2772,8 @@ async def chat_stream(payload: ChatInput, request: Request = None) -> StreamingR
             display_gate=AnswerDisplayGate()
         request_history=voice_call_history(history) if payload.voice_call_id else history
         selected_memories = memories
-        if not single_button and history_limit.get('memory_enabled') and payload.chronicle_supplement_max_microusd:
+        if (not single_button and history_limit.get('memory_enabled') and payload.chronicle_supplement_max_microusd
+                and not any(item.get('included') and not item.get('retained') for item in chronicle_diagnostics.get('selectionDetails', []))):
             supplement = await chat_chronicle_supplement(payload,request,profile,generation_id)
             if supplement is not None:
                 try:
@@ -2767,6 +2785,9 @@ async def chat_stream(payload: ChatInput, request: Request = None) -> StreamingR
                         if not db.execute('SELECT 1 FROM characters WHERE id=? AND enabled=1', (payload.character_id,)).fetchone():
                             yield sse('error', {'message':'角色已停用，本次回复已停止；已发生用量仍按原规则结算。'})
                             return
+                        preference=db.execute('SELECT paid_enabled FROM chat_memory_lookup_preferences WHERE character_id=?',(payload.character_id,)).fetchone()
+                        if not (bool(preference[0]) if preference else metered()):
+                            supplement={}
                         selected_memories, _, _ = memory_context(db,payload.character_id,conversation_id,
                             payload.message,chronicle_owner_id=current_owner,supplement=supplement)
                         request_history = scoped_tool_history(db,conversation_id,payload.character_id,current_owner,stored_history)

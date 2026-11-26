@@ -41,6 +41,23 @@ class CalendarSync(unittest.TestCase):
     def publish(self):
         self.assertEqual(self.case.submit(self.case.card()).json()['status'],'published')
 
+    def test_metered_existing_scope_reuses_work_after_old_expiry(self):
+        self.publish()
+        self.grant.update(endsAt=self.when.isoformat(), perTask=1, perDay=1, total=1)
+        self.path.write_text(json.dumps(self.grant))
+        with patch.dict("os.environ", {"YOSAKI_RUN_MODE": "development", "YOSAKI_OWNER_BILLING": "metered"}):
+            grant = self.service.grant()
+            self.assertTrue(self.service.valid_grant(grant))
+            self.service.refresh()
+            generated = self.adapter.generate.call_count
+            self.assertGreater(generated, 0)
+            self.service.refresh()
+            self.assertEqual(self.adapter.generate.call_count, generated)
+            self.assertEqual(self.grant, json.loads(self.path.read_text()))
+            self.grant.update(revoked=True)
+            self.path.write_text(json.dumps(self.grant))
+            self.assertFalse(self.service.valid_grant(self.service.grant()))
+
     def test_daily_price_refresh_and_task_cap(self):
         def tariff(input_rate, read, write, output):
             page = Mock()
