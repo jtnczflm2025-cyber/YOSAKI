@@ -363,3 +363,14 @@ button:disabled:not(.icon-btn) { box-shadow: none; }
   .window-chat .chat-compact-composer { padding: 8px 10px max(8px,env(safe-area-inset-bottom)); }
   .chat-drawer-scroll { padding: 16px; }
 }
+
+.chat-compact-toolbar .chat-new-entry {display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:36px;}
+.chat-conversation-manager :is(label,p,.chat-history-row > button),
+.window-form.memory-window :is(.window-section-heading p,.memory-settings label,.memory-controls input),
+.voice-window .daily-voice-overview p {font-size:var(--ui-reading-size,17px);line-height:1.75;}
+.daily-voice-overview {border-bottom:1px solid var(--ui-line-soft);padding-bottom:12px;}
+@container (max-width:650px) {
+  .chat-compact-toolbar .chat-new-entry {grid-column:3;grid-row:2;}
+  .chat-compact-toolbar .chat-manage-entry {grid-row:1;}
+  .chat-compact-toolbar .chat-new-entry svg {display:none;}
+}

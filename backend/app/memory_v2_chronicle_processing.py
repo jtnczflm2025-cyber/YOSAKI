@@ -38,7 +38,7 @@ def reconcile_period_plans(db, cid, owner_id, *, now):
     return temporal.maintenance_plan(db, cid, now=now), retired
 
 
-def prepare_entry(connect, cid, owner_id, eid):
+def prepare_entry(connect, cid, owner_id, eid, *, missing_only=False):
     """Finish local draft preparation before an import opens its editor."""
     try:
         diagnostics=[]
@@ -53,6 +53,21 @@ def prepare_entry(connect, cid, owner_id, eid):
                     if published:
                         diagnostics.append({'field':name,'status':'published_version_preserved'})
                         continue
+                    from . import memory_v2_import_filing as filing
+                    field_name={'category':'categories','tag':'tags','keyword':'keywords'}[name]
+                    stored= db.execute('''SELECT f.rule_version FROM mv3_entries e
+                        JOIN mv3_entry_field_links l ON l.set_id=e.draft_version_id AND l.name=?
+                        JOIN mv3_entry_fields f ON f.id=l.field_id WHERE e.character_id=? AND e.id=?''',
+                        (field_name,cid,eid)).fetchone()
+                    if stored and stored[0]==filing.VERSION:
+                        diagnostics.append({'field':name,'status':'import_suggestion_preserved'})
+                        continue
+                    if missing_only:
+                        current=metadata.read_draft(db,eid,cid)
+                        field={'category':'categories','tag':'tags','keyword':'keywords'}[name]
+                        if current['fields'][field].get('fieldId'):
+                            diagnostics.append({'field':name,'status':'existing_field_preserved'})
+                            continue
                     if name=='keyword':
                         # Automatic upkeep initializes missing fields only.
                         # Never bulk-rewrite existing historical candidates.

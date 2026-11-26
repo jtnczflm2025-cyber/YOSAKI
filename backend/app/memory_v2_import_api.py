@@ -3,11 +3,11 @@
 import hashlib
 import json
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import archives
+from . import archives, memory_v2_local_import_tasks as local
 from . import memory_v2_import as importer
 from . import memory_v2_index as indexer
 from .memory_v2_import_preview import preview_upload, batch_preview_fingerprint, MAX_FILES
@@ -22,6 +22,9 @@ class BoundaryInput(BaseModel):
 
 
 def install(app, connect, authenticate, *, allowed_origins=()):
+    worker = local.Worker(connect)
+    app.add_event_handler("startup", worker.start)
+    app.add_event_handler("shutdown", worker.stop)
     trusted_origins = {origin.rstrip("/") for origin in allowed_origins}
     def owner(request: Request):
         if not authenticate(request):
@@ -34,6 +37,13 @@ def install(app, connect, authenticate, *, allowed_origins=()):
 
     def response(data):
         return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
+    def reject_active(db,batch,cid):
+        importer._begin(db)
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='mv3_jobs'").fetchone():
+            row=local.task(db,batch,cid)
+            if row and row['status'] in ('queued','running','paused','failed'):
+                raise HTTPException(409, "请使用本地任务的暂停、继续或取消入口")
 
     async def uploads(files):
         if not files or len(files) > MAX_FILES:
@@ -67,23 +77,104 @@ def install(app, connect, authenticate, *, allowed_origins=()):
                          "previewFingerprint": batch_preview_fingerprint(previews)})
 
     @router.post("/batches")
-    async def prepare(characterId: int = Form(...), files: list[UploadFile] = File(...),
+    async def prepare(request: Request, tasks: BackgroundTasks, characterId: int = Form(...), files: list[UploadFile] = File(...),
+                      withPlanSynopsis: bool = Form(False), localAuto: bool = Form(False),
                       confirmedOffsetMinutes: int | None = Form(None),
                       expectedPreviewFingerprint: str | None = Form(None)):
+        if withPlanSynopsis and localAuto:
+            raise HTTPException(422, "请选择一种整理方式")
         bodies = await uploads(files)
         with connect() as db:
-            return response(importer.prepare(db, characterId, bodies, confirmedOffsetMinutes,
-                                             expectedPreviewFingerprint))
+            user=authenticate(request) if withPlanSynopsis or localAuto else None
+            if (withPlanSynopsis or localAuto) and not user:
+                raise HTTPException(401, "请重新登录")
+            result=importer.prepare(db, characterId, bodies, confirmedOffsetMinutes,
+                                    expectedPreviewFingerprint,plan_owner=user['id'] if withPlanSynopsis else None,
+                                    local_owner=user['id'] if localAuto else None)
+        if localAuto:
+            worker.signal.set()
+        if withPlanSynopsis:
+            from .memory_v2_import_processing import run
+            tasks.add_task(run,connect,result['batchId'])
+        return response(result)
+
+    @router.post("/batches/{batch_id}/local")
+    def local_start(batch_id: str, characterId: int, mode: str, request: Request,
+                    expectedVersion: int | None=None, expectedPreviewFingerprint: str | None=None):
+        with worker.lock, connect() as db:
+            local.enqueue(db,batch_id,characterId,authenticate(request)['id'],mode,expectedVersion,expectedPreviewFingerprint)
+            result=local.public(db,local.task(db,batch_id,characterId))
+        worker.signal.set()
+        return response(result)
+
+    @router.post("/batches/{batch_id}/local/{action}")
+    def local_control(batch_id: str, action: str, characterId: int, version: int, request: Request):
+        with worker.lock, connect() as db:
+            local.change(db,batch_id,characterId,authenticate(request)['id'],action,version)
+            result=local.public(db,local.task(db,batch_id,characterId))
+        worker.signal.set()
+        return response(result)
+
+    @router.post("/batches/{batch_id}/prepare-review")
+    def prepare_review(batch_id: str, characterId: int, request: Request, tasks: BackgroundTasks, onlyUnsent: bool=False):
+        from . import memory_v2_import_processing as pipeline
+        with connect() as db:
+            user=authenticate(request)
+            if not user:raise HTTPException(401,"需要登录")
+            reject_active(db,batch_id,characterId)
+            if importer._batch(db,batch_id,characterId)['status']!='raw_complete':
+                raise HTTPException(409,"请先完成原文归档")
+            if onlyUnsent:
+                pipeline.continue_unsent(db,batch_id,characterId,user['id'])
+            else:
+                pipeline.grant(db,batch_id,characterId,user['id'])
+        tasks.add_task(pipeline.run,connect,batch_id)
+        return response({'batchId':batch_id})
 
     @router.get("/batches/{batch_id}")
     def batch_status(batch_id: str, characterId: int):
         with connect() as db:
-            return response(importer.status(db, batch_id, characterId))
+            if not db.in_transaction:
+                db.execute('BEGIN')
+            result=importer.status(db, batch_id, characterId)
+            from . import memory_v2_import_titles as titles, memory_v2_metadata as metadata
+            archived={r[0] for r in db.execute('''SELECT s.entry_id FROM mv2_import_segments s
+                JOIN mv3_entries e ON e.id=s.entry_id AND e.character_id=?
+                WHERE s.batch_id=? AND e.status='archived' ''',(characterId,batch_id))} if any(
+                    s['entry_id'] for s in result['segments']) else set()
+            linked_files={s['file_id'] for s in result['segments'] if s['entry_id']}
+            for file in result['files']:
+                file['has_entry_links']=file['id'] in linked_files
+            result['segments']=[s for s in result['segments'] if s['entry_id'] not in archived]
+            for segment in result['segments']:
+                if segment['entry_id']:
+                    try:
+                        segment['currentTitle']=titles.reading_title(db,segment['entry_id'],characterId)
+                    except ValueError:
+                        segment['currentTitle']=None
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='mv3_jobs'").fetchone():
+                from .memory_v2_import_processing import progress
+                result['localTask']=local.public(db,local.task(db,batch_id,characterId))
+                result['processing']=progress(db,batch_id,characterId)
+                if result['processing'] is not None:
+                    for issue in result['processing']['exceptions']:
+                        try:
+                            detail=metadata.read_draft(db,issue.pop('entryId'),characterId)
+                            required=('categories','tags','keywords') if issue['reason']=='import_filing_incomplete' else ('synopsis',)
+                            issue['resolved']=all(detail['fields'][name].get('value') for name in required)
+                        except ValueError:
+                            issue['resolved']=False
+            return response(result)
 
     @router.get("/batches")
     def batches(characterId: int):
         with connect() as db:
-            return response({"items": importer.list_batches(db, characterId)})
+            items=importer.list_batches(db, characterId)
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='mv3_jobs'").fetchone():
+                states={r[0]:r[1] for r in db.execute("SELECT input_hash,status FROM mv3_jobs WHERE character_id=? AND kind=?",(characterId,local.KIND))}
+                for item in items:
+                    item['localStatus']=states.get(item['batchId'])
+            return response({"items":items})
 
     @router.get("/raw-files")
     def raw_files(characterId: int, fromDate: str | None = None, toDate: str | None = None):
@@ -99,33 +190,39 @@ def install(app, connect, authenticate, *, allowed_origins=()):
     @router.delete("/batches/{batch_id}")
     def discard(batch_id: str, characterId: int):
         with connect() as db:
+            reject_active(db,batch_id,characterId)
             return response(importer.discard_preview(db, batch_id, characterId))
 
     @router.post("/batches/{batch_id}/confirm")
     def confirm(batch_id: str, characterId: int, expectedVersion: int | None = None,
                 expectedPreviewFingerprint: str | None = None):
         with connect() as db:
+            reject_active(db,batch_id,characterId)
             return response(importer.confirm(db, batch_id, characterId, expectedVersion,
                                              expectedPreviewFingerprint))
 
     @router.post("/batches/{batch_id}/step")
     def step(batch_id: str, characterId: int):
         with connect() as db:
+            reject_active(db,batch_id,characterId)
             return response(importer.step(db, batch_id, characterId))
 
     @router.post("/batches/{batch_id}/pause")
     def pause(batch_id: str, characterId: int):
         with connect() as db:
+            reject_active(db,batch_id,characterId)
             return response(importer.set_paused(db, batch_id, characterId, True))
 
     @router.post("/batches/{batch_id}/resume")
     def resume(batch_id: str, characterId: int):
         with connect() as db:
+            reject_active(db,batch_id,characterId)
             return response(importer.set_paused(db, batch_id, characterId, False))
 
     @router.put("/batches/{batch_id}/boundaries")
     def boundaries(batch_id: str, payload: BoundaryInput):
         with connect() as db:
+            reject_active(db,batch_id,payload.characterId)
             return response(importer.replace_segments(db, batch_id, payload.characterId,
                                                       payload.fileId, payload.segments, payload.expectedVersion))
 
@@ -135,10 +232,14 @@ def install(app, connect, authenticate, *, allowed_origins=()):
             return response({"entries": importer.create_draft_entries(db, batch_id, characterId)})
 
     @router.post("/index/start")
-    def index_start(characterId: int):
+    def index_start(characterId: int, reuseRunning: bool = False):
         with connect() as db:
             db.execute('BEGIN IMMEDIATE')
             importer.list_batches(db, characterId)
+            if reuseRunning:
+                active = db.execute("SELECT * FROM mv2_jobs WHERE character_id=? AND status='running'", (characterId,)).fetchone()
+                if active:
+                    return response(dict(active))
             try:
                 meta = db.execute('SELECT state FROM mv2_meta WHERE character_id=?', (characterId,)).fetchone()
                 mode = 'incremental' if meta and meta['state'] == 'ready' else 'rebuild'
@@ -150,6 +251,7 @@ def install(app, connect, authenticate, *, allowed_origins=()):
     def index_step(job_id: str, characterId: int):
         with connect() as db:
             importer.list_batches(db, characterId)
+            local.require_unmanaged_index(db,job_id,characterId)
             job = indexer._job(db, job_id)
             if job is None or job["character_id"] != characterId:
                 raise HTTPException(404, "索引任务不存在")

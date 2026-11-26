@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh"><meta charset="utf-8"><title>YOSAKI 本地麦克风音量检查</title>
+<main>
+  <h1>本地麦克风音量检查</h1>
+  <p>点击一次“开始”，对着麦克风说话并看音量条。使用与连续通话相同的拾音设置和音量门槛；只在浏览器内计算，不保存录音，不发送音频，最多 10 秒后自动停止。</p>
+  <label>输入设备 <select id="input"><option value="">系统默认</option></select></label>
+  <button id="start">开始一次检查</button><button id="stop" disabled>停止</button>
+  <p id="state" role="status">未开始</p><meter id="meter" min="0" max="1" value="0"></meter>
+</main>
+<script>
+const state = document.querySelector('#state');
+const meter = document.querySelector('#meter');
+const startButton = document.querySelector('#start');
+const stopButton = document.querySelector('#stop');
+const inputSelect = document.querySelector('#input');
+let stream = null, context = null, source = null, processor = null;
+let timer = 0, epoch = 0, attempted = false;
+let capturedSeconds = 0, voicedSeconds = 0, peakRms = 0;
+let inputLabel = '未知输入设备', inputMuted = false;
+
+async function loadInputs() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    for (const device of devices.filter(item => item.kind === 'audioinput' &&
+      item.deviceId && item.deviceId !== 'default')) {
+      const option = document.createElement('option');
+      option.value = device.deviceId;
+      option.textContent = device.label || '未命名麦克风';
+      inputSelect.append(option);
+    }
+  } catch { /* device list is optional */ }
+}
+void loadInputs();
+
+function stop(message) {
+  epoch++;
+  clearTimeout(timer);
+  if (processor) { processor.onaudioprocess = null; processor.disconnect(); }
+  source?.disconnect();
+  stream?.getTracks().forEach(track => track.stop());
+  if (context) void context.close().catch(() => {});
+  stream = context = source = processor = null;
+  meter.value = 0;
+  startButton.disabled = true;
+  stopButton.disabled = true;
+  state.textContent = message || (voicedSeconds >= 0.25
+    ? `检查结束：自动识别门槛已达到（有声 ${voicedSeconds.toFixed(2)} 秒，峰值 ${peakRms.toFixed(4)}，设备 ${inputLabel}，设备静音 ${inputMuted}）。音频未保存或发送。`
+    : `检查结束：本地音量未达到当前自动识别门槛（有声 ${voicedSeconds.toFixed(2)} 秒，峰值 ${peakRms.toFixed(4)}，采集 ${capturedSeconds.toFixed(1)} 秒，设备 ${inputLabel}，设备静音 ${inputMuted}）。音频未保存或发送。`);
+}
+
+stopButton.addEventListener('click', () => stop('已手动停止；音频未保存或发送。'));
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && attempted) stop('页面离开，检查已停止。');
+});
+window.addEventListener('pagehide', () => {
+  if (attempted) stop('页面离开，检查已停止。');
+});
+
+startButton.addEventListener('click', async () => {
+  if (attempted) return;
+  attempted = true;
+  startButton.disabled = true;
+  stopButton.disabled = false;
+  inputSelect.disabled = true;
+  state.textContent = '正在申请麦克风；请允许后对着麦克风说话。';
+  const thisEpoch = ++epoch;
+  try {
+    const audio = {channelCount:1,echoCancellation:true,noiseSuppression:true};
+    if (inputSelect.value) audio.deviceId = {exact:inputSelect.value};
+    const acquired = await navigator.mediaDevices.getUserMedia({audio, video:false});
+    if (thisEpoch !== epoch) {
+      acquired.getTracks().forEach(track => track.stop());
+      return;
+    }
+    stream = acquired;
+    const track = stream.getAudioTracks()[0];
+    inputLabel = track?.label || '未知输入设备';
+    inputMuted = Boolean(track?.muted);
+    if (track) track.addEventListener('mute', () => { inputMuted = true; });
+    context = new AudioContext();
+    await context.resume();
+    if (thisEpoch !== epoch || context.state !== 'running') {
+      stop('音频处理未启动，检查已停止。');
+      return;
+    }
+    source = context.createMediaStreamSource(stream);
+    processor = context.createScriptProcessor(8192, 1, 1);
+    processor.onaudioprocess = event => {
+      if (thisEpoch !== epoch) return;
+      event.outputBuffer.getChannelData(0).fill(0);
+      const samples = event.inputBuffer.getChannelData(0);
+      let energy = 0;
+      for (const value of samples) energy += value * value;
+      const rms = Math.sqrt(energy / samples.length);
+      meter.value = Math.min(1, rms * 8);
+      peakRms = Math.max(peakRms, rms);
+      capturedSeconds += samples.length / context.sampleRate;
+      if (rms >= 0.015) voicedSeconds += samples.length / context.sampleRate;
+      state.textContent = '请说话，观察音量条是否随声音变化。';
+    };
+    source.connect(processor);
+    processor.connect(context.destination);
+    state.textContent = `麦克风已就绪（${inputLabel}），现在请说话；10 秒后自动结束。`;
+    timer = setTimeout(() => stop(), 10000);
+  } catch {
+    if (thisEpoch === epoch) stop('麦克风权限未允许或设备不可用。');
+  }
+});
+</script>
+</html>

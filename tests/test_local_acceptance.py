@@ -1,9 +1,12 @@
 """Local acceptance checks. Never import the application against the real data directory."""
 import json
 import os
+import sqlite3
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
+from contextlib import closing, contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -12,6 +15,19 @@ import httpx
 _import_data = tempfile.TemporaryDirectory(prefix="yosaki-test-import-")
 os.environ["YOSAKI_DATA_DIR"] = _import_data.name
 from backend.app import main as app_module  # noqa: E402
+from backend.app import backup_v2  # noqa: E402
+
+
+@contextmanager
+def restored_backup_db(blob: bytes, password: str):
+    """Check a legacy backup in a fresh synthetic directory, never the live test DB."""
+    with tempfile.TemporaryDirectory(prefix="yosaki-v1-isolated-restore-") as directory:
+        root = Path(directory)
+        file = root / "source.ybackup"
+        file.write_bytes(blob)
+        backup_v2.restore_to_directory(file, password, root / "restored", root / "work")
+        with closing(sqlite3.connect(root / "restored" / "yosaki.sqlite3")) as db:
+            yield db
 
 
 class MockService(BaseHTTPRequestHandler):
@@ -31,6 +47,8 @@ class MockService(BaseHTTPRequestHandler):
     decision_response = None
     decision_responses = []
     plan_text = "Responses done"
+    continuation_batches = 0
+    model_stream_calls = 0
 
     def log_message(self, *_args):
         pass
@@ -107,6 +125,7 @@ class MockService(BaseHTTPRequestHandler):
                 body=json.dumps({"output":[{"type":"message","content":[{"type":"output_text","text":"OK"}]}]}).encode()
                 content_type="application/json"
             else:
+                self.__class__.model_stream_calls += 1
                 def event(item): return "data: "+json.dumps(item)+"\n\n"
                 reasoning={"type":"reasoning","encrypted_content":"opaque-test-only","summary":[{"type":"summary_text","text":"公开摘要"}]}
                 events=[{"type":"response.reasoning_summary_text.delta","delta":"公开摘要"},{"type":"response.output_item.done","item":reasoning}]
@@ -124,17 +143,23 @@ class MockService(BaseHTTPRequestHandler):
             body = json.dumps({"choices": [{"message": {"content": selected}}]}).encode()
             content_type = "application/json"
         else:
+            self.__class__.model_stream_calls += 1
             self.__class__.last_payload=payload
             self.__class__.last_messages=payload["messages"]
             has_tool_result = any(message.get("role") == "tool" for message in payload["messages"])
             if self.response_mode == "monologue":
                 delta={"content":"<inner>藏在心里的话</inner><say>说出口的话</say>","reasoning_content":"公开摘要"}
+            elif has_tool_result and self.continuation_batches:
+                self.__class__.continuation_batches -= 1
+                tool_name = payload["tools"][0]["function"]["name"]
+                delta = {"tool_calls": [{"index": 0, "id": f"mock-next-{self.continuation_batches}",
+                    "type": "function", "function": {"name": tool_name, "arguments": json.dumps(self.arguments)}}]}
             elif has_tool_result:
                 delta = {"content": "done"}
             else:
                 tool_name = payload["tools"][0]["function"]["name"]
                 delta = {"tool_calls": [{"index": 0, "id": "mock-call", "type": "function", "function": {"name": tool_name, "arguments": json.dumps(self.arguments)}}]}
-            body = ("data: " + json.dumps({"choices": [{"delta": delta, "finish_reason": None}]}) + "\n\ndata: [DONE]\n\n").encode()
+            body = ("data: " + json.dumps({"choices": [{"delta": delta, "finish_reason": "tool_calls" if delta.get('tool_calls') else "stop"}]}) + "\n\ndata: [DONE]\n\n").encode()
             content_type = "text/event-stream"
         self.send_response(200)
         self.send_header("Content-Type", content_type)
@@ -174,6 +199,8 @@ class LocalAcceptance(unittest.IsolatedAsyncioTestCase):
         MockService.decision_response = None
         MockService.decision_responses = []
         MockService.plan_text = "Responses done"
+        MockService.continuation_batches = 0
+        MockService.model_stream_calls = 0
         from cryptography.hazmat.primitives.asymmetric import rsa
         MockService.oauth_key = rsa.generate_private_key(public_exponent=65537,key_size=2048)
         from backend.app import chatgpt_plan
@@ -290,12 +317,9 @@ class LocalAcceptance(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.delete(f"/api/characters/{cid}")).status_code, 204)
         with app_module.connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM drive_states WHERE character_id=?", (cid,)).fetchone()[0], 0)
-        restored = await self.client.post("/api/system/backup/import", data={"passphrase":"test-password-123","confirm_replace":"true"}, files={"backup":("v3.ybackup",exported.content,"application/octet-stream")})
-        self.assertEqual(restored.status_code, 200, restored.text)
-        self.assertEqual((await self.client.post("/api/auth/login", json={"username":"owner","password":"temporary-password-123"})).status_code, 200)
-        restored_state = (await self.client.get(base)).json()
-        self.assertTrue(restored_state["enabled"])
-        self.assertEqual(len(restored_state["drives"]), 12)
+        self.assertEqual((await self.client.post("/api/system/backup/import", data={"passphrase":"test-password-123","confirm_replace":"true"}, files={"backup":("v3.ybackup",exported.content,"application/octet-stream")})).status_code, 409)
+        with restored_backup_db(exported.content, "test-password-123") as restored_db:
+            self.assertEqual(restored_db.execute("SELECT COUNT(*) FROM drive_states WHERE character_id=?", (cid,)).fetchone()[0], 12)
 
     async def wait_free_status(self, base, session_id, expected):
         import asyncio
@@ -431,10 +455,9 @@ class LocalAcceptance(unittest.IsolatedAsyncioTestCase):
         await self.client.put(f"/api/desires/{copied['id']}/enabled", json={"enabled":True})
         self.assertEqual((await self.client.get(f"/api/desires/{copied['id']}/learning")).json()["evidence"], [])
         self.assertEqual((await self.client.delete(f"/api/characters/{cid}")).status_code, 204)
-        restored = await self.client.post("/api/system/backup/import", data={"passphrase":"phase5-backup-password","confirm_replace":"true"}, files={"backup":("phase5.ybackup",backup.content,"application/octet-stream")})
-        self.assertEqual(restored.status_code, 200, restored.text)
-        self.assertEqual((await self.client.post("/api/auth/login", json={"username":"owner","password":"temporary-password-123"})).status_code, 200)
-        self.assertGreaterEqual(len((await self.client.get(base + "/learning")).json()["evidence"]), 4)
+        self.assertEqual((await self.client.post("/api/system/backup/import", data={"passphrase":"phase5-backup-password","confirm_replace":"true"}, files={"backup":("phase5.ybackup",backup.content,"application/octet-stream")})).status_code, 409)
+        with restored_backup_db(backup.content, "phase5-backup-password") as restored_db:
+            self.assertGreaterEqual(restored_db.execute("SELECT COUNT(*) FROM learning_evidence WHERE character_id=?", (cid,)).fetchone()[0], 4)
 
     async def test_phase5_model_failure_empty_and_role_isolation(self):
         await self.setup_owner()
@@ -506,9 +529,8 @@ class LocalAcceptance(unittest.IsolatedAsyncioTestCase):
         self.assertIn("本地环境返回", learning_state["memories"][0]["fact"])
         backup = await self.client.post("/api/system/backup/export", data={"passphrase":"phase4-backup-password"})
         self.assertEqual(backup.status_code, 200)
-        restored = await self.client.post("/api/system/backup/import", data={"passphrase":"phase4-backup-password","confirm_replace":"true"}, files={"backup":("phase4.ybackup",backup.content,"application/octet-stream")})
-        self.assertEqual(restored.status_code, 200, restored.text)
-        self.assertEqual((await self.client.post("/api/auth/login", json={"username":"owner","password":"temporary-password-123"})).status_code, 200)
+        with restored_backup_db(backup.content, "phase4-backup-password") as restored_db:
+            self.assertEqual(restored_db.execute("SELECT status FROM feedback_activities_v4 WHERE id=?", (items[0]["id"],)).fetchone()[0], "applied")
         self.assertEqual((await self.client.get(base + f"/feedback-v4/{items[0]['id']}")).json()["status"], "applied")
         copied = (await self.client.post(f"/api/characters/{cid}/duplicate")).json()
         await self.client.put(f"/api/desires/{copied['id']}/enabled", json={"enabled": True})
@@ -648,9 +670,8 @@ class LocalAcceptance(unittest.IsolatedAsyncioTestCase):
         self.assertIn("岬角", prior_context)
         backup = await self.client.post("/api/system/backup/export", data={"passphrase":"phase3-backup-password"})
         self.assertEqual(backup.status_code, 200)
-        restored = await self.client.post("/api/system/backup/import", data={"passphrase":"phase3-backup-password","confirm_replace":"true"}, files={"backup":("phase3.ybackup",backup.content,"application/octet-stream")})
-        self.assertEqual(restored.status_code, 200, restored.text)
-        self.assertEqual((await self.client.post("/api/auth/login", json={"username":"owner","password":"temporary-password-123"})).status_code, 200)
+        with restored_backup_db(backup.content, "phase3-backup-password") as restored_db:
+            self.assertEqual(restored_db.execute("SELECT COUNT(*) FROM environment_discoveries WHERE character_id=?", (cid,)).fetchone()[0], 3)
         self.assertEqual(len((await self.client.get(base + "/environments/local-studio-v1")).json()["discoveries"]), 3)
 
     async def test_phase3_tool_confirmation_restart_and_revision(self):
@@ -853,10 +874,9 @@ class LocalAcceptance(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.delete(f"/api/characters/{cid}")).status_code, 204)
         with app_module.connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM volition_items WHERE character_id=?", (cid,)).fetchone()[0], 0)
-        restored = await self.client.post("/api/system/backup/import", data={"passphrase": "phase2-password-123", "confirm_replace": "true"}, files={"backup": ("phase2.ybackup", backup.content, "application/octet-stream")})
-        self.assertEqual(restored.status_code, 200, restored.text)
-        self.assertEqual((await self.client.post("/api/auth/login", json={"username": "owner", "password": "temporary-password-123"})).status_code, 200)
-        self.assertEqual((await self.client.get(base + "/intentions")).json()[0]["stage"], "pending")
+        self.assertEqual((await self.client.post("/api/system/backup/import", data={"passphrase": "phase2-password-123", "confirm_replace": "true"}, files={"backup": ("phase2.ybackup", backup.content, "application/octet-stream")})).status_code, 409)
+        with restored_backup_db(backup.content, "phase2-password-123") as restored_db:
+            self.assertEqual(restored_db.execute("SELECT stage FROM volition_items WHERE character_id=? ORDER BY created_at LIMIT 1", (cid,)).fetchone()[0], "pending")
 
     async def test_health_auth_and_demo_persistence(self):
         self.assertEqual((await self.client.get("/health")).json()["status"], "ok")
@@ -889,16 +909,18 @@ class LocalAcceptance(unittest.IsolatedAsyncioTestCase):
         backup = await self.client.post("/api/system/backup/export", data={"passphrase": "backup-password-123"})
         self.assertEqual(backup.status_code, 200, backup.text)
         files = {"backup": ("test.ybackup", backup.content, "application/octet-stream")}
-        self.assertEqual((await self.client.post("/api/system/backup/import", data={"passphrase": "backup-password-123"}, files=files)).status_code, 428)
-        self.assertEqual((await self.client.post("/api/system/backup/import", data={"passphrase": "wrong-password-123", "confirm_replace": "true"}, files=files)).status_code, 422)
+        self.assertEqual((await self.client.post("/api/system/backup/import", data={"passphrase": "backup-password-123"}, files=files)).status_code, 409)
+        with self.assertRaises(backup_v2.BackupError):
+            with restored_backup_db(backup.content, "wrong-password-123"):
+                pass
         await self.client.patch(f"/api/characters/{original['id']}", json={"name": "changed"})
         restored = await self.client.post("/api/system/backup/import", data={"passphrase": "backup-password-123", "confirm_replace": "true"}, files=files)
-        self.assertEqual(restored.status_code, 200, restored.text)
-        self.assertEqual((await self.client.get("/api/characters")).status_code, 401)
-        await self.client.post("/api/auth/login", json={"username": "owner", "password": "temporary-password-123"})
-        self.assertEqual((await self.client.get("/api/characters")).json()[0]["name"], original["name"])
-        self.assertFalse((await self.client.get("/api/models")).json()[0]["api_key_configured"])
-        self.assertFalse((await self.client.get("/api/mcp/servers")).json()[0]["auth_configured"])
+        self.assertEqual(restored.status_code, 409, restored.text)
+        self.assertEqual((await self.client.get("/api/characters")).json()[0]["name"], "changed")
+        with restored_backup_db(backup.content, "backup-password-123") as restored_db:
+            self.assertEqual(restored_db.execute("SELECT name FROM characters WHERE id=?", (original["id"],)).fetchone()[0], original["name"])
+            self.assertIsNone(restored_db.execute("SELECT api_key_encrypted FROM model_profiles LIMIT 1").fetchone()[0])
+            self.assertIsNone(restored_db.execute("SELECT auth_secret_encrypted FROM mcp_servers LIMIT 1").fetchone()[0])
 
     async def test_mock_model_mcp_tool_decisions(self):
         await self.setup_owner()
@@ -939,6 +961,106 @@ class LocalAcceptance(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(run["status"]=="archived" for message in messages for run in message.get("tool_runs",[])))
         self.assertEqual((await self.client.get("/api/chat/tool-runs",params={"conversation_id":imported_id})).json(),[])
         self.assertNotIn("tools/call",MockService.calls)
+
+    async def test_r21_persists_three_tool_batches_and_rejects_legacy_without_model(self):
+        await self.setup_owner()
+        character_id = (await self.client.get("/api/characters")).json()[0]["id"]
+        model = (await self.client.post("/api/models", json={"name":"r21 mock","base_url":self.url,
+            "model_name":"mock","api_key":"synthetic-model-secret"})).json()
+        mcp = (await self.client.post("/api/mcp/servers", json={"name":"mock","endpoint":self.url+"/mcp"})).json()
+        self.assertEqual((await self.client.post(f"/api/mcp/servers/{mcp['id']}/connect")).status_code, 200)
+        self.assertEqual((await self.client.post(f"/api/mcp/servers/{mcp['id']}/refresh-tools")).status_code, 200)
+        tool = (await self.client.get(f"/api/mcp/servers/{mcp['id']}/tools")).json()[0]
+        self.assertEqual((await self.client.patch(f"/api/mcp/tools/{tool['id']}", json={"enabled":True})).status_code, 200)
+        MockService.continuation_batches = 2
+        first = await self.client.post("/api/chat/stream", json={"character_id":character_id,
+            "model_profile_id":model["id"],"message":"remember 美咲"})
+        self.assertIn("tool_batch_waiting", first.text)
+        conversation_id = json.loads(first.text.split("event: message_start\ndata: ")[1].split("\n")[0])["conversation_id"]
+        with app_module.connect() as db:
+            origin = db.execute("SELECT * FROM messages WHERE conversation_id=? AND role='user'",
+                                (conversation_id,)).fetchone()
+            self.assertIsNotNone(origin)
+        for batch in range(3):
+            runs = (await self.client.get("/api/chat/tool-runs", params={"conversation_id":conversation_id})).json()
+            run = runs[-1]
+            with app_module.connect() as db:
+                assistant = db.execute("SELECT * FROM messages WHERE id=?", (run["assistant_message_id"],)).fetchone()
+                self.assertEqual(assistant["origin_user_message_id"], origin["id"])
+                self.assertEqual(assistant["origin_user_content_sha256"],
+                                 app_module.tool_origin_fingerprint(origin["content"]))
+                self.assertEqual(assistant["origin_character_id"], character_id)
+            self.assertEqual((await self.client.post(f"/api/chat/tool-runs/{run['id']}/decision",
+                json={"approve":False})).status_code, 200)
+            continuation = await self.client.post(f"/api/chat/tool-runs/{run['id']}/continue")
+            self.assertEqual(continuation.status_code, 200, continuation.text)
+            self.assertIn("tool_batch_waiting" if batch < 2 else "message_complete", continuation.text)
+        self.assertEqual(MockService.model_stream_calls, 4)
+        self.assertNotIn("tools/call", MockService.calls)
+
+        legacy = await self.client.post("/api/chat/stream", json={"character_id":character_id,
+            "model_profile_id":model["id"],"message":"legacy pending"})
+        self.assertIn("tool_batch_waiting", legacy.text)
+        legacy_conversation = json.loads(legacy.text.split("event: message_start\ndata: ")[1].split("\n")[0])["conversation_id"]
+        legacy_run = (await self.client.get("/api/chat/tool-runs", params={"conversation_id":legacy_conversation})).json()[-1]
+        self.assertEqual((await self.client.post(f"/api/chat/tool-runs/{legacy_run['id']}/decision",
+            json={"approve":False})).status_code, 200)
+        with app_module.connect() as db:
+            db.execute("""UPDATE messages SET origin_user_message_id=NULL,origin_user_content_sha256=NULL,
+                origin_character_id=NULL WHERE id=?""", (legacy_run["assistant_message_id"],))
+        before = MockService.model_stream_calls
+        denied = await self.client.post(f"/api/chat/tool-runs/{legacy_run['id']}/continue")
+        self.assertEqual(denied.status_code, 409)
+        self.assertEqual(MockService.model_stream_calls, before)
+        with app_module.connect() as db:
+            self.assertEqual(db.execute("SELECT tool_batch_status FROM messages WHERE id=?",
+                (legacy_run["assistant_message_id"],)).fetchone()[0], "awaiting_confirmation")
+
+    async def test_r21_rejects_corrupt_tool_turns_before_model_or_tool(self):
+        await self.setup_owner()
+        character_id = (await self.client.get("/api/characters")).json()[0]["id"]
+        model = (await self.client.post("/api/models", json={"name":"r21 mock","base_url":self.url,
+            "model_name":"mock","api_key":"synthetic-model-secret"})).json()
+        mcp = (await self.client.post("/api/mcp/servers", json={"name":"mock","endpoint":self.url+"/mcp"})).json()
+        self.assertEqual((await self.client.post(f"/api/mcp/servers/{mcp['id']}/connect")).status_code, 200)
+        self.assertEqual((await self.client.post(f"/api/mcp/servers/{mcp['id']}/refresh-tools")).status_code, 200)
+        tool = (await self.client.get(f"/api/mcp/servers/{mcp['id']}/tools")).json()[0]
+        self.assertEqual((await self.client.patch(f"/api/mcp/tools/{tool['id']}", json={"enabled":True})).status_code, 200)
+        for mutation in ("deleted_origin", "edited_origin", "new_user", "forged_origin", "call_id", "wrong_role"):
+            with self.subTest(mutation=mutation):
+                with app_module.connect() as db:
+                    conv = db.execute("""INSERT INTO conversations(character_id,title,created_at,updated_at)
+                        VALUES(?,'synthetic','2026-01-01','2026-01-01')""", (character_id,)).lastrowid
+                    old = db.execute("""INSERT INTO messages(conversation_id,role,content,created_at)
+                        VALUES(?,'user','older turn','2026-01-01')""", (conv,)).lastrowid
+                sent = await self.client.post("/api/chat/stream", json={"character_id":character_id,
+                    "conversation_id":conv,"model_profile_id":model["id"],"message":"remember 美咲"})
+                self.assertIn("tool_batch_waiting", sent.text)
+                run = (await self.client.get("/api/chat/tool-runs", params={"conversation_id":conv})).json()[-1]
+                self.assertEqual((await self.client.post(f"/api/chat/tool-runs/{run['id']}/decision",
+                    json={"approve":False})).status_code, 200)
+                with app_module.connect() as db:
+                    origin = db.execute("SELECT id FROM messages WHERE conversation_id=? AND role='user' ORDER BY id DESC LIMIT 1", (conv,)).fetchone()[0]
+                    if mutation == "deleted_origin":
+                        db.execute("DELETE FROM messages WHERE id=?", (origin,))
+                    elif mutation == "edited_origin":
+                        db.execute("UPDATE messages SET content='changed' WHERE id=?", (origin,))
+                    elif mutation == "new_user":
+                        db.execute("INSERT INTO messages(conversation_id,role,content,created_at) VALUES(?,'user','new turn','2026-01-01')", (conv,))
+                    elif mutation == "forged_origin":
+                        db.execute("UPDATE messages SET origin_user_message_id=? WHERE id=?", (old, run["assistant_message_id"]))
+                    elif mutation == "call_id":
+                        db.execute("UPDATE tool_runs SET provider_call_id='forged' WHERE id=?", (run["id"],))
+                    else:
+                        db.execute("UPDATE messages SET origin_character_id=? WHERE id=?", (character_id + 1, run["assistant_message_id"]))
+                before = MockService.model_stream_calls
+                denied = await self.client.post(f"/api/chat/tool-runs/{run['id']}/continue")
+                self.assertEqual(denied.status_code, 409, denied.text)
+                self.assertEqual(MockService.model_stream_calls, before)
+                self.assertEqual(MockService.calls.count("tools/call"), 0)
+                with app_module.connect() as db:
+                    self.assertEqual(db.execute("SELECT tool_batch_status FROM messages WHERE id=?",
+                        (run["assistant_message_id"],)).fetchone()[0], "awaiting_confirmation")
 
     async def test_v2_context_archive_and_two_region_reply(self):
         self.assertEqual(app_module.split_monologue("<inner>秘密",True),("","秘密","incomplete"))
@@ -1240,12 +1362,19 @@ class LocalAcceptance(unittest.IsolatedAsyncioTestCase):
             try:
                 self.assertEqual((await self.client.post("/api/system/backup-plan/run")).status_code,409)
             finally: scheduled_backup.run_lock.release()
-            for handler in app_module.app.router.on_startup: await handler()
-            await asyncio.sleep(0.2)
+            # The suite disables background work globally. Enable only this
+            # synthetic local backup scheduler, not unrelated autonomy tasks.
+            with patch.dict(os.environ,{'YOSAKI_BACKGROUND_TASKS_ENABLED':'1'}):
+                for handler in app_module.app.router.on_startup:
+                    if handler.__module__==scheduled_backup.__name__:await handler()
+            for _ in range(50):
+                if len(list(local.glob('*.ybackup')))==1 and (await self.client.get('/api/system/backup-plan')).json()['runs']:break
+                await asyncio.sleep(.1)
             self.assertEqual(len(list(local.glob("*.ybackup"))),1)
             self.assertEqual(len((await self.client.get("/api/system/backup-plan")).json()["runs"]),1)
         finally:
-            for handler in app_module.app.router.on_shutdown: await handler()
+            for handler in app_module.app.router.on_shutdown:
+                if handler.__module__==scheduled_backup.__name__:await handler()
             await asyncio.sleep(0)
             os.environ.pop("YOSAKI_BACKUP_PASSWORD",None)
 

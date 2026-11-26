@@ -73,3 +73,4 @@ def authority_for(db):
         return value if isinstance(value,dict) else {}
     except (OSError,ValueError):
         return {}
+

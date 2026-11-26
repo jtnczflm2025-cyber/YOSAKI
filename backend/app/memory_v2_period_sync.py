@@ -20,6 +20,7 @@ from . import memory_v2_metadata as meta, memory_v2_time_projection as projectio
 from . import memory_v2_processing as proc, memory_v2_jobs as jobs
 from . import memory_v2_m36_trial as trials, memory_v2_responses_adapter as responses
 from .memory_v2_temporal_digest import _period_key
+from .memory_v2_read import validated_read
 
 KIND = 'chronicle_calendar_synopsis_v1'
 MODEL = 'gpt-6.1-sol'
@@ -58,6 +59,7 @@ def official_price(utc_day):
             'inputUsdPerMillion':str(rates['Input']),'outputUsdPerMillion':str(rates['Output']),'sourceUrl':PRICE_URL}
 
 
+@validated_read
 def snapshots(db, cid, owner, now=None):
     channel.authorized(db,cid,owner)
     now = now or datetime.now(timezone.utc)
@@ -422,3 +424,4 @@ class PeriodSync:
         except sqlite3.DatabaseError:
             with self.connect() as db:proc._transaction(db);settle(db,False)
             raise
+

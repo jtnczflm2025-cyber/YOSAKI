@@ -1,6 +1,43 @@
 """One live-source validator for M1 archive reads and M2 recall."""
 
 from . import memory_v2_sources as adapters
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
+
+_validation = ContextVar('memory_read_validation', default=None)
+
+
+@contextmanager
+def validation_scope(db):
+    current = _validation.get()
+    if current is not None and current['db'] is db:
+        yield
+        return
+    token = _validation.set({'db': db, 'stamp': None, 'sources': {}})
+    try:
+        yield
+    finally:
+        _validation.reset(token)
+
+
+def validated_read(function):
+    @wraps(function)
+    def read(db, *args, **kwargs):
+        with validation_scope(db):
+            return function(db, *args, **kwargs)
+    return read
+
+
+def source_cache(db):
+    current = _validation.get()
+    if current is None or current['db'] is not db:
+        return None
+    stamp = (db.total_changes, db.execute('PRAGMA data_version').fetchone()[0])
+    if current['stamp'] != stamp:
+        current['sources'].clear()
+        current['stamp'] = stamp
+    return current['sources']
 
 
 def valid_source(db, indexed, character_id, file_cache=None):

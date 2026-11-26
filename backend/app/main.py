@@ -23,6 +23,7 @@ from typing import Any, AsyncIterator, Literal
 from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
@@ -714,7 +715,7 @@ async def require_single_user_session(request: Request, call_next):
     if path.startswith("/api/") and request.method not in ("GET","HEAD","OPTIONS") and origin and origin not in ALLOWED_ORIGINS:
         return JSONResponse({"detail":"跨站请求来源未获允许"},status_code=403)
     if path.startswith("/api/") and path != "/health" and path not in PUBLIC_AUTH_PATHS:
-        session = current_session(request)
+        session = await run_in_threadpool(current_session, request)
         if session is None:
             return JSONResponse({"detail":"需要登录后继续"}, status_code=401)
         request.state.user = session

@@ -68,7 +68,7 @@ def _suggest(rows):
     return [(start, end, f"待整理片段 {index}") for index, (start, end) in enumerate(zip(starts, ends), 1)]
 
 
-def prepare(db, character_id, files, confirmed_offset_minutes=None, expected_preview_fingerprint=None):
+def prepare(db, character_id, files, confirmed_offset_minutes=None, expected_preview_fingerprint=None, *, plan_owner=None, local_owner=None):
     """Stage a fully validated preview; source messages remain untouched."""
     if not db.execute("SELECT 1 FROM characters WHERE id=? AND enabled=1", (character_id,)).fetchone():
         raise HTTPException(404, "角色不可访问")
@@ -139,6 +139,12 @@ def prepare(db, character_id, files, confirmed_offset_minutes=None, expected_pre
                             character_id,external_conversation_id,external_message_id,file_id,content_sha256)
                             VALUES(?,?,?,?,?)""", (character_id, external_id, item["externalMessageId"],
                                                  file_id, hashlib.sha256(item["row"]["content"].encode()).hexdigest()))
+        if plan_owner is not None:
+            from .memory_v2_import_processing import grant
+            grant(db,batch_id,character_id,plan_owner)
+        if local_owner is not None:
+            from .memory_v2_local_import_tasks import enqueue
+            enqueue(db,batch_id,character_id,local_owner,'organize',1,preview_fingerprint)
         db.commit()
     except sqlite3.IntegrityError as exc:
         db.rollback()
@@ -197,8 +203,10 @@ def confirm(db, batch_id, character_id, expected_version=None, expected_preview_
 
 def status(db, batch_id, character_id):
     row = _batch(db, batch_id, character_id)
-    files = db.execute("""SELECT id,name,file_sha256,cursor,total,status,conversation_id,conversion_note
-        FROM mv2_import_files WHERE batch_id=? ORDER BY rowid""", (batch_id,)).fetchall()
+    files = db.execute("""SELECT f.id,f.name,f.file_sha256,f.cursor,f.total,f.status,f.conversation_id,f.conversion_note,
+        EXISTS(SELECT 1 FROM mv2_import_boundary_confirmations b WHERE b.file_id=f.id
+               AND b.confirmation_origin='local-dialogue-reading-v1' AND b.confirmed_by_user_id IS NULL) AS reading_ranges_pending
+        FROM mv2_import_files f WHERE f.batch_id=? ORDER BY f.rowid""", (batch_id,)).fetchall()
     segments = db.execute("""SELECT s.id,s.file_id,s.ordinal,s.start_ordinal,s.end_ordinal,s.title,s.entry_id
         FROM mv2_import_segments s WHERE s.batch_id=? ORDER BY s.file_id,s.ordinal""", (batch_id,)).fetchall()
     fingerprint = _staged_preview_fingerprint(db, batch_id) if row["status"] == "preview" else None
@@ -503,7 +511,8 @@ def confirm_dialogue_drafts(db, batch_id, character_id, file_id, segments, *,
 
 def _confirm_drafts(db, batch_id, character_id, file_id, segments, *,
                        expected_sha, expected_parser, expected_snapshot,
-                       h31_snapshot_hash, editor_id, confirmation_origin, required_count=13, expected_total=130, generic=False):
+                       h31_snapshot_hash, editor_id, confirmation_origin, required_count=13, expected_total=130, generic=False,
+                       prepare_reading=False):
     """Isolated post-RAW H3.2 confirmation and 13 P1-A2 drafts, in one transaction."""
     from . import memory_v2_metadata as metadata
     if db.in_transaction:
@@ -540,7 +549,10 @@ def _confirm_drafts(db, batch_id, character_id, file_id, segments, *,
         prior = db.execute("SELECT * FROM mv2_import_boundary_confirmations WHERE file_id=?",
                            (file_id,)).fetchone()
         if prior:
-            if (prior["plan_hash"] != plan_hash or prior["source_snapshot_hash"] != snapshot
+            confirm_existing = (generic and confirmation_origin == 'owner-dialogue-boundary-v1'
+                                and prior["confirmation_origin"] == 'local-dialogue-reading-v1'
+                                and prior["confirmed_by_user_id"] is None and json.loads(prior["plan_json"]) == ordered)
+            if ((prior["plan_hash"] != plan_hash and not confirm_existing) or prior["source_snapshot_hash"] != snapshot
                     or prior["batch_id"] != batch_id or prior["character_id"] != character_id):
                 raise ValueError("h32_confirmation_conflict")
             existing = db.execute("""SELECT * FROM mv2_import_segments WHERE batch_id=? AND file_id=?
@@ -560,6 +572,10 @@ def _confirm_drafts(db, batch_id, character_id, file_id, segments, *,
                     raise ValueError("h32_entry_binding_changed")
                 result.append({"entryId": row["entry_id"], "start": row["start_ordinal"],
                                "end": row["end_ordinal"], "title": detail["fields"]["title"]["value"]})
+            if confirm_existing:
+                db.execute("""UPDATE mv2_import_boundary_confirmations SET plan_hash=?,h31_snapshot_hash=?,
+                    confirmation_origin=?,confirmed_by_user_id=?,confirmed_at=? WHERE file_id=?""",
+                    (plan_hash,h31_snapshot_hash,confirmation_origin,editor_id,_now(),file_id))
             db.commit()
             return {"planHash": plan_hash, "sourceSnapshot": snapshot,
                     "planVersion": prior["plan_version"], "items": result, "reused": True}
@@ -576,7 +592,7 @@ def _confirm_drafts(db, batch_id, character_id, file_id, segments, *,
             VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
             (file_id, batch_id, character_id, version, plan_hash, snapshot,
              h31_snapshot_hash, json.dumps(ordered, ensure_ascii=False),
-             confirmation_origin, editor_id, _now()))
+             confirmation_origin, None if prepare_reading else editor_id, _now()))
         result = []
         for i, item in enumerate(ordered, 1):
             refs = [{"kind": "message", "id": r["messageId"]}
@@ -584,6 +600,9 @@ def _confirm_drafts(db, batch_id, character_id, file_id, segments, *,
             request_key = "h32:" + plan_hash + ":" + str(i)
             draft = metadata.create_draft(db, character_id, refs, item["title"], editor_id,
                                           request_key, title_origin="h31_system_suggested")
+            if prepare_reading:
+                from . import memory_v2_dialogue_refinement as finite
+                finite.create(db, character_id, editor_id, draft['entryId'], draft['versionId'])
             segment_id = str(uuid.uuid4())
             db.execute("""INSERT INTO mv2_import_segments
                 (id,batch_id,file_id,ordinal,start_ordinal,end_ordinal,title,entry_id)

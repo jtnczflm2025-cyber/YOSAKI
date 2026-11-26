@@ -9,7 +9,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
-from test_local_acceptance import MockService, app_module
+from test_local_acceptance import MockService, app_module, restored_backup_db
 
 
 class PsychologyAcceptance(unittest.IsolatedAsyncioTestCase):
@@ -133,9 +133,8 @@ class PsychologyAcceptance(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM psychological_events WHERE event_id='feedback:phase6-feedback'").fetchone()[0], 1)
         backup = await self.client.post("/api/system/backup/export", data={"passphrase": "phase6-backup-password"})
         self.assertEqual(backup.status_code, 200)
-        restored = await self.client.post("/api/system/backup/import", data={"passphrase": "phase6-backup-password", "confirm_replace": "true"}, files={"backup": ("phase6.ybackup", backup.content, "application/octet-stream")})
-        self.assertEqual(restored.status_code, 200, restored.text)
-        self.assertEqual((await self.client.post("/api/auth/login", json={"username": "owner", "password": "temporary-password-123"})).status_code, 200)
+        with restored_backup_db(backup.content, "phase6-backup-password") as restored_db:
+            self.assertEqual(restored_db.execute("SELECT COUNT(*) FROM second_order_desires WHERE character_id=?", (cid,)).fetchone()[0], 2)
         self.assertEqual(len((await self.client.get(base + "/psychology")).json()["secondOrderDesires"]), 2)
         copy = (await self.client.post(f"/api/characters/{cid}/duplicate")).json()
         await self.client.put(f"/api/desires/{copy['id']}/enabled", json={"enabled": True})

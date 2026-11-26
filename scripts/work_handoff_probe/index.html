@@ -1,0 +1,11 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>YOSAKI 本机交接探针</title>
+<style>body{font:17px system-ui;max-width:820px;margin:48px auto;padding:0 24px;color:#20313d;background:#f4f7fa}section{background:white;padding:24px;margin:18px 0;border:1px solid #dce3e9;border-radius:12px}pre{white-space:pre-wrap;overflow-wrap:anywhere}textarea{box-sizing:border-box;width:100%;min-height:100px;padding:12px;font:inherit}button{padding:12px 20px;background:#214f73;color:white;border:0;border-radius:6px;margin-top:12px}#status{color:#733c00}</style>
+<h1>本机交接探针</h1><p>无模型调用 · 仅固定测试文件 · 127.0.0.1</p>
+<section><h2>待审报告（合成）</h2><pre id="report">读取中…</pre><p id="status"></p></section>
+<section><h2>指定项目文件</h2><pre id="file">读取中…</pre></section>
+<section><h2>审核意见</h2><label for="review">测试意见（仅内存收件，不触发 Codex）</label><textarea id="review"></textarea><button id="send">发送测试意见</button><pre id="receipt" aria-live="polite"></pre></section>
+<script nonce="__NONCE__">
+async function get(path){const r=await fetch(path);if(!r.ok)throw Error(r.status);return r.json()}
+Promise.all([get('/api/report'),get('/api/file')]).then(([r,f])=>{document.querySelector('#report').textContent=r.report;document.querySelector('#status').textContent=r.codexDelivery;document.querySelector('#file').textContent=f.path+'\n\n'+f.content}).catch(e=>document.querySelector('#status').textContent=String(e));
+document.querySelector('#send').onclick=async()=>{try{const r=await fetch('/api/review',{method:'POST',headers:{'Content-Type':'application/json','X-Probe-Nonce':'__NONCE__'},body:JSON.stringify({text:document.querySelector('#review').value})});document.querySelector('#receipt').textContent=JSON.stringify(await r.json(),null,2)}catch(e){document.querySelector('#receipt').textContent=String(e)}};
+</script></html>

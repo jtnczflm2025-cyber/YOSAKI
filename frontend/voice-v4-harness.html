@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh">
+<head><meta charset="UTF-8"><title>V4 隔离音频输出验收</title></head>
+<body>
+  <main>
+    <h1>V4 隔离音频输出验收</h1>
+    <p>仅连接本机假 WebSocket，播放本地生成的合成正弦波；不使用日常库或供应商。</p>
+    <button id="connect">连接本机夹具</button>
+    <button id="normal">正常输出</button>
+    <button id="keepalive">保活后输出</button>
+    <button id="late">迟到片段</button>
+    <button id="error">应用错误</button>
+    <button id="remote_close">远端关闭</button>
+    <button id="disconnect">无关闭帧断线</button>
+    <button id="stop">立即停止</button>
+    <button id="inject_stale">注入旧音频事件</button>
+    <output id="state">idle</output>
+    <pre id="events"></pre>
+  </main>
+  <script type="module" src="/src/voice/realtimeHarness.ts"></script>
+</body>
+</html>

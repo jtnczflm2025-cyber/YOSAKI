@@ -36,3 +36,7 @@ Phase 7 可读取 `/psychology/context` 中有界的结构化参考与 `/psychol
 ## 套餐模型通道实测
 
 套餐模型档案与 API Key 档案共用上述本地预算，但套餐通道要求 `store=false`、`stream=true`。欲望模块等待流式终止事件后才接受结构化文本；缺失终止事件或 schema 校验失败不写入决定。2026-10-27 使用本机已授权账户在隔离角色上实测了一次 Phase 6 评价，状态为 completed；这不证明其他账户、模型或第三方 MCP 可用。
+
+## Phase 6.5 规则补充
+
+新事件采用 `psychology-v2`：成功或失败的操作只证明执行结果，没有独立目标证据时 `perceivedProgress=null`。原 `psychology-v1` 事件的保存值与规则版本不修改。局部更新、衰减和关系传播现可独立于 SQLite 调用；数据库仍在同一事务内写入事件和快照。审批时最多启用 40 条边，超出返回冲突，不静默丢弃边。行为观察协议、隔离副本、来源去重和只读报告见 [Phase 6.5](BEHAVIOR_OBSERVATION.md)。

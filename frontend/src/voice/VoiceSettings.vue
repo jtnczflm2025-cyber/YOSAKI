@@ -5,6 +5,12 @@ import { voiceApi, wsUnavailableText, type Privacy, type VoiceConfiguration, typ
 
 const props = defineProps<{characterId:number; wsPlayback?:boolean; callActive?:boolean}>()
 const emit = defineEmits<{'update:wsPlayback':[enabled:boolean]}>()
+const recordingSection = ref<HTMLElement|null>(null)
+const readingSection = ref<HTMLElement|null>(null)
+function focusSection(section:HTMLElement|null) {
+  section?.focus({preventScroll:true})
+  section?.scrollIntoView({block:'start'})
+}
 const wsCapability = ref<{available:boolean; reason:string|null}|null>(null)
 onMounted(async () => {
   try { wsCapability.value = await voiceApi('/realtime/daily-status') }
@@ -191,6 +197,11 @@ async function saveScribe() {
 
 <template>
   <section class="voice-section">
+    <section v-if="scribeSettings || budgetSettings" class="daily-voice-overview" aria-label="已保存的语音设置">
+      <h3>日常语音</h3>
+      <p v-if="scribeSettings">麦克风{{scribeSettings.service_enabled && scribeSettings.enabled ? '已启用' : '未启用'}}<span v-if="scribeUsage"> · 今天最多还能录音 {{scribeUsage.available_attempts}} 次</span>。<button type="button" class="text-btn" @click="focusSection(recordingSection)">录音设置</button></p>
+      <p v-if="budgetSettings">朗读日上限 {{budgetSettings.effective_limits.jobs}} 次合成、{{budgetSettings.effective_limits.requests}} 次请求、{{budgetSettings.effective_limits.characters}} 字。<button type="button" class="text-btn" @click="focusSection(readingSection)">朗读额度设置</button></p>
+    </section>
     <AIExpressionSettings />
     <h3>连续通话播放方式</h3>
     <label><input type="checkbox" :checked="wsPlayback"
@@ -226,7 +237,7 @@ async function saveScribe() {
       <p v-if="profile">角色 ID：{{profile.character_id}}；档案状态：{{profile.active?'活动':'非活动'}}；revision：{{profile.revision}}</p>
       <p>音色克隆与训练在 ElevenLabs 官方平台完成；当前仅绑定 Voice ID。V1-B 已分项验证，空闲 TTD 仍未完成。</p>
       <section v-if="budgetSettings" class="voice-section">
-        <h3>每日自动朗读额度</h3>
+        <h3 ref="readingSection" tabindex="-1">每日自动朗读额度</h3>
         <p>默认验收配置为每天 2 次合成任务、2 个请求、160 个送读字符。超过额度只暂停自动朗读，文字聊天和已有缓存不受影响。额度是调用量限制，不是费用上限。</p>
         <label>每天最多合成任务（0～{{budgetSettings.ceilings.jobs}}）<input v-model.number="budgetDraft.jobs" type="number" min="0" :max="budgetSettings.ceilings.jobs" step="1"/></label>
         <label>每天最多请求（0～{{budgetSettings.ceilings.requests}}）<input v-model.number="budgetDraft.requests" type="number" min="0" :max="budgetSettings.ceilings.requests" step="1"/></label>
@@ -238,7 +249,7 @@ async function saveScribe() {
         <p role="status">{{budgetMessage}}</p>
       </section>
       <section v-if="scribeSettings" class="voice-section">
-        <h3>Scribe 麦克风草稿</h3>
+        <h3 ref="recordingSection" tabindex="-1">Scribe 麦克风草稿</h3>
         <p>默认关闭。只有点击“开始录音”才向 ElevenLabs 发送麦克风音频；转写只填入草稿，编辑并点击发送后才会聊天。取消会释放麦克风和连接，不自动重录或重连。</p>
         <label><input v-model="scribeEnabled" type="checkbox"/>允许我主动使用 Scribe 麦克风</label>
         <label>每日最多录音次数（0～{{scribeSettings.maximum.attempts}}）<input v-model.number="scribeDraft.attempts" type="number" min="0" :max="scribeSettings.maximum.attempts" step="1"/></label>

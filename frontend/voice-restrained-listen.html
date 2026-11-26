@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>YOSAKI 克制表达对照</title>
+<link rel="stylesheet" href="/theme/tokens.css"><link rel="stylesheet" href="/theme/silver.css">
+<style>body{margin:0;background:var(--ui-bg);color:var(--ui-ink);font-family:var(--ui-font)}main{max-width:860px;margin:auto;padding:24px}p,pre{font-size:17px;line-height:1.75;white-space:pre-wrap}.card{padding:20px;margin:20px 0}audio{width:100%}h1{font-size:26px}h2{font-size:20px}@media(max-width:600px){main{padding:12px}.card{padding:12px}}</style></head>
+<body><main><h1>克制表达对照</h1><p>只播放已有音频，暂停、重播和刷新不会重新生成。</p><p>{{kind}}</p>
+<section class="glass-surface glass-reading card"><div class="glass-content"><h2>原缓存：AI 零标注 · 历史参照</h2><pre>まだ眠れないなら、少し話そう。</pre><audio id="reference" controls preload="none" src="/audio/reference"></audio></div></section>
+<section class="glass-surface glass-reading card"><div class="glass-content"><h2>克制候选：[thoughtful]</h2><pre>[thoughtful] まだ眠れないなら、少し話そう。</pre><p>只增加一个受控标签；音色、正文、模型、语言和其他参数不变。不保证降低音高。</p>{{candidate_audio}}</div></section>
+<p id="playback" role="status">可播放已有文件。</p><p>听评重点：语气是否更克制、亲近但不雀跃；音色、自然度和停顿是否保留。</p></main>
+<script>for(const audio of document.querySelectorAll('audio'))for(const event of ['play','pause','ended','error'])audio.addEventListener(event,()=>{if(event==='play')for(const other of document.querySelectorAll('audio'))if(other!==audio)other.pause();document.getElementById('playback').textContent=audio.id+'：'+event;});</script>
+</body></html>

@@ -5,6 +5,10 @@
 <!-- /chat-enhancement-current -->
 
 
+Memory V2 M3 隔离开发状态（2026-10-29）：已提供派生版本与审核、保守清理、可追溯第一人称引述、时间投影/摘录摘要及显式本地任务。详见 [M3 能力与验收契约](docs/MEMORY_V2_M3.md) 和 [三域权威架构](docs/MEMORY_V2_ARCHITECTURE.md)。M3 路由与迁移未接入正式后端，不改变聊天上下文；不等同于自由模型精修或正式部署完成。
+
+M3.5 已追加可选的**隔离模拟模型草稿**：保序分批、逐批请求身份、预算预留、来源校验和人工审核门槛。M3.6 的 Responses 适配器已通过零付费隔离工程验收；真实 Provider 的精修质量与费用尚未验收，正式入口仍关闭。详见 [M3.5 契约](docs/MEMORY_V2_M3.md#m35-隔离模型草稿2026-10-29)与 [M3.6 验收](docs/MEMORY_V2_M36_ZERO_PAY_ACCEPTANCE.md)。
+
 YOSAKI is currently a local development prototype. It is **not ready for public internet/VPS exposure**.
 
 ## Start frontend (PowerShell)
@@ -25,12 +29,12 @@ Requires Python 3.11 or newer. This machine's `python`/`py` launcher was not fun
 Set-Location "D:\AI xiangmu\自建前端"
 uv venv .venv --python 3.12
 uv pip install --python .venv\Scripts\python.exe -r backend\requirements.txt
-.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+.\scripts\start_yosaki_development.ps1
 ```
 
-The backend initializes `data/yosaki.sqlite3` and seeds 阿夜. Check `http://127.0.0.1:8000/health`. The Vite development server proxies `/api` to this backend.
+R2-A 启动入口在导入 `backend.app.main` 之前检查运行模式和实际数据库路径。当前正式日常数据库仍需 Schema 初始化，因此 Development 入口会拒绝启动，须等待 R2-C 单独批准。Preview 使用 `scripts/start_yosaki_preview.ps1`（后端 8001）及 `scripts/start_yosaki_preview_frontend.ps1`（前端 5174）；Test 使用 `scripts/start_yosaki_test.ps1` 和独立临时数据库。详情见 [运行模式说明](docs/RUNTIME_MODES.md)。不要直接运行旧的 Uvicorn 导入命令连接日常库。
 
-For an isolated instance, set `YOSAKI_DATA_DIR` to an absolute directory before starting the backend. Both `yosaki.sqlite3` and `.secret_key` will be created there. With the variable unset, the existing project `data/` directory remains the default.
+`YOSAKI_DATA_DIR` 若已存在且与所选模式不符，启动入口会拒绝启动。启动脚本只在当前子进程内设置正确目录，不更改 Windows 用户或系统环境变量。
 
 ## Local acceptance checks
 
@@ -54,6 +58,7 @@ For HTTPS behind a correctly configured reverse proxy, set `YOSAKI_COOKIE_SECURE
 - Phase 4 feedback for free activity: verified operation evidence, optional simulated review, pre-action enjoyment expectations, reviewable short-term drive changes, and candidate interest evidence. See [feedback and expectation gap](docs/FEEDBACK.md).
 - Phase 5 long-term learning: confirmed free-activity feedback becomes traceable evidence; memory, preference, strategy, and goal continuity changes are reviewed before entering future context. See [long-term learning](docs/LEARNING.md).
 - Phase 6 simulated psychology: evidence-linked emotion, virtual body load, reflective desires, bounded relations and conflict history. These are references for volition, never execution permissions. See [psychological state](docs/PSYCHOLOGY.md).
+- Phase 6.5 adds source-aware context checks, a read-only behavior report and a local seven-day manual observation workflow. Its scripted runs verify mechanics; the real observation remains a separate daily process. See [behavior observation](docs/BEHAVIOR_OBSERVATION.md).
 - Model, MCP, and plugin secrets are encrypted server-side and are never stored in browser localStorage. The optional ChatGPT OAuth record is encrypted in the backend data directory, outside SQLite backups.
 - Demo replies remain available when no model profile is selected. No live third-party model or MCP endpoint was tested in the latest tool-loop/plugin stage.
 
@@ -99,10 +104,22 @@ Isolated validation passed 20 backend tests, Python compilation and the frontend
 
 The previously authorized local `gpt-6.1-sol` profile was tested with a temporary SQLite database and role. The desire system's shared model entry now consumes the required streamed Responses events; it waits for `response.completed`, reads output text deltas, and caps output with the selected profile. Schema-guided output is used for structured decisions. Live observation and pure volition both passed validation. A bounded free session chose a local environment action, received a successful result, and recorded one psychological operation event. A confirmed feedback record fed a completed manual Phase 5 consolidation; a separate Phase 6 appraisal completed. One Phase 4 review validly returned no subjective evaluation, so that run made no invented drive change. Temporary test data was discarded; the existing authorization was only read or refreshed. This check does not establish third-party MCP, other models, devices, or deployment compatibility. [Official plan inference guidance](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference) requires `store=false`, `stream=true` and a terminal completion event.
 
+## Phase 6.5 integration and behavior observation (2026-10-27)
+
+Backend `0.24.0` separates operation completion from goal progress (`perceivedProgress=null` without independent goal evidence), enforces a 40-edge psychology graph limit, and avoids injecting an accepted learning memory twice when it is already selected from ordinary memories. Old psychology event records retain their original rule version. The `/psychology` page and workspace window now show a read-only 1–31 day report with daily gaps, model-call timing and token evidence, resource samples, behavioral ratios and source-linked diagnostic flags; JSON and CSV exports omit raw prompts, model replies and credentials.
+
+The ignored `data/phase65-observation/` copy was prepared from the current 阿夜 SQLite database after stopping the normal backend. It contains the existing character history but no login sessions, model/MCP secrets, active MCP permissions, backup schedule, `.secret_key` or OAuth file. To use it, run `scripts/start_phase65_observation.ps1` in PowerShell; it binds the isolated backend to `127.0.0.1` with the observation and plan-model flags. Log in and authorize the plan profile anew. The observation mode limits the Phase 2–4/6 model entrances to four calls per character per Hong Kong day. It does not count ordinary chat or legacy guided awakening, so the seven-day protocol uses only the listed entrances. See [setup, limits and metrics](docs/BEHAVIOR_OBSERVATION.md).
+
+Thirty scripted free sessions were run through the actual local worker in an isolated database, with controlled psychological event times, three verified environment operations, a reviewed and confirmed Phase 4 feedback, and Phase 5 evidence collection. This checks mechanism continuity rather than real model choice over 30 days. The real seven-day observation still requires seven separate user-started days; no unattended wake-up is enabled. Third-party MCP, multi-process scheduling, device and public deployment checks remain separate.
+
+The first real observation day (2026-10-27, Hong Kong) completed one manually started session on the isolated 阿夜 copy: two plan-model decisions, two verified local environment actions, one experience review and one psychology appraisal. The owner approved the proposed short-term feedback. The shared daily limit recorded 4/4 model calls, 772 trusted actual output tokens against 2,800 reserved; six real observation days remain. See the dated log in [behavior observation](docs/BEHAVIOR_OBSERVATION.md).
+
+The second Hong Kong observation day (2026-10-28) completed one further manually started session: the model revisited the prior candidate interest, compared the local map and travel notes, then chose to finish early. It used 4/4 model calls and 827 trusted output tokens against 2,800 reserved. A drive version conflict prompted recalculation; the owner reviewed and approved the revised short-term feedback. Five real observation days remain.
+
 ## V2 local features (2026-10-23)
 
 - New characters default to the strict 50-turn context window. Existing character rows retain their old message-count setting until changed. Chunked mode retains a stable history segment between periodic trims. The context preview shows the selected messages; provider usage is shown only when returned.
-- Model profiles can select OpenAI-compatible Chat Completions or the API Key based OpenAI Responses protocol. Responses streams public reasoning summaries separately from spoken text, preserves opaque reasoning continuation data server-side for tool turns, and uses the existing per-call approval chain. The opaque state is omitted from ordinary message and archive APIs. This local adapter has only been checked against a mock endpoint.
+- Model profiles can select OpenAI-compatible Chat Completions or the API key-based OpenAI Responses protocol. Responses streams public reasoning summaries separately from spoken text, preserves opaque reasoning continuation data server-side for tool turns, and uses the existing per-call approval chain. The opaque state is omitted from ordinary message and archive APIs. This local adapter has only been checked against a mock endpoint.
 - Chat exports support versioned JSON or readable Markdown/TXT in a ZIP, date/turn filters, display names, multiple text replacements, paragraph and time controls, and selectable code/tool/reasoning/monologue output. Templates stay in browser localStorage. Import previews each file and adds conversations to the chosen character; duplicate file hashes are skipped. JSON preserves tool run details as inert history cards with no approval actions. Imports limit each file to 8 MiB, each batch to 64 MiB, and each file to 20,000 messages; Markdown/TXT require the default role markers shown in [chat archive examples](docs/CHAT_ARCHIVES.md).
 - Settings can configure a local sync directory and a separate private GitHub repository for encrypted `.ybackup` files. Scheduled runs default off; when enabled they default to 03:00 Asia/Hong_Kong, keeping seven visible files. Set `YOSAKI_BACKUP_PASSWORD` (12+ characters) and, for GitHub, `YOSAKI_BACKUP_GITHUB_TOKEN` in the backend environment. Keep both out of source control. The GitHub token needs access to repository metadata and Contents write permission on the dedicated repository. Transient GitHub upload errors receive at most three attempts; a failed upload leaves a successful local backup in place. Retention runs only after upload succeeds and reports a separate cleanup failure state. Restore downloads a remote file for the existing confirmed import flow. Deleting old GitHub files does not erase Git history.
 - ChatGPT plan usage has an opt-in local OAuth and direct Responses adapter with encrypted backend credential storage, scope checks, token refresh/revocation, a model catalog and the existing tool confirmation chain. A real account granted the plan scope and completed a model test and chat stream on this development machine on 2026-10-23. The separate API Key Responses profile does not consume ChatGPT Plus allowance.
@@ -313,11 +330,117 @@ The frontend now starts on `/` with a welcome screen and enters `/hub` on button
 - Window focus/open/close stays URL-synchronized. `YOSAKI.last-route` and `YOSAKI.last-open-windows` persist with the existing layout key; restored layouts are validated, de-duplicated and clamped to the viewport, and CSS-resized dimensions are captured on pointer release.
 - Verified with `npm run build`, backend `py_compile`, `/health`, direct-route browser checks, mode switching and browser-history restoration. Viewport QA additionally covered 390×844 responsive chat and character pages with no horizontal overflow; physical-device and assistive-technology QA remain outstanding.
 
+## Memory authority and tool continuation guard (2026-10-28)
 
-## Memory V2 / Chronicle 限定收口（2026-11-25）
+- Phase 5 accepted memories retain authority over their ordinary-memory projections. Ordinary edit, toggle and delete return 409 for linked projections; Phase 5 archive remains available. Invalid or stale projections are excluded before context ranking and limits across chat, Phase 2/3 and Phase 6.5.
+- Tool continuation validates the conversation, assistant batch, tool call IDs, results and original user turn before changing batch state. A valid continuation uses that user message as the memory topic. Broken chains return 409 before a model request. No new database schema or Memory V2 M1 index was added.
 
-日常Chronicle入口为本机 `/chronicle`，聊天入口为 `/chat`。完整精修、单经历梗概和周期摘要分开；只有确认发布且资格有效的内容进入记忆通道，RAW/CLEANED不返回给角色。单条补查默认12秒、可主动选30秒；不是未来费用或材料授权。
+## Memory V2 M1 read-only archive (2026-10-28)
 
-当前结果和简明操作见 [Memory统一执行计划](docs/MEMORY_V2_EXECUTION_PLAN.md)。12/30已加载、离线及实际界面通过；09单次30秒注入通过但首轮只有工具提议，独立明确指令下搜索/确认/展开/确认/续答通过。不能推定自然问法全链、稳定性或Owner内容质量通过。其他12条仍待Owner审核，持续自主付费未授权。核价有效至香港2026-11-26 08:00，不自动续日。
+- M1 adds explicit, rebuildable SQLite indexing for visible chat messages and safe Phase 3 operation metadata. Source text stays in the original tables; search, temporal segments, details and unfold are authenticated read-only APIs under `/api/memory-v2`.
+- M1 does not call a model, rewrite text, create summaries, approve learning, or enter the existing context injection chain. Future cleaned, first-person and digest views will use ordered original source references and are reserved for M3. See `docs/MEMORY_V2_M1.md`.
 
-此分支基于既有聊天交付分支，仅把当前Memory与共享入口所需的导入/构建依赖成套交付。Voice依赖源用于保持共享入口可导入，不构成新语音实测或安装承诺。私人正文、数据库、API Key、音频、Cookie、隔离副本和付费验收原始包均不在提交范围。本机完整历史仍留存；Git中的计划为脱敏交接版。首次安装/真实库迁移仍须遵守Runtime预检和单独授权，源码提交不会自动迁移或启用付费。
+## Memory V2 M2 isolated recall (2026-10-28)
+
+- M2 adds a read-only generator interface, conservative lexical/entity/explicit candidate retrieval, live provenance and approval checks, passive-only simulated cooldown, and bounded RAW context compilation with traceable exact excerpts. Formal manual and Phase 5 approved memories remain separate from historical archive evidence.
+- Shadow comparison runs only on copied source with temporary SQLite and simulated local requests; no M2 route or live request hook is registered. M2 does not call a model, execute tools, change existing injection, or implement M3 text views. Synthetic evaluation and deployment gates are in `docs/MEMORY_V2_M2.md`.
+- 2026-10-28 R2.1 isolation update: a synthetic M2 regression found that deleting the actual user-turn message could attach a pending tool batch to an earlier message. Tool batches now carry a persisted original user message ID, content SHA-256 and character ID. Old unanchored pending batches reject continuation; completed history remains readable. The former failing case and 58 isolated M1/M2/Phase 1–6.5 tests now pass. M2.4 fixed synthetic evaluation is complete; formal database migration, real shadow routing and context switching remain unapproved. See `docs/MEMORY_V2_R21_M24.md`.
+
+## Memory V2 architecture and future route (2026-10-28)
+
+- [Architecture and M4/M5 route](docs/MEMORY_V2_ARCHITECTURE.md) separates Chronicle evidence and faithful derived views, the independent Personal Notebook, and a future Experiential Memory association view. M2 remains the read-only recall coordinator; Phase 5 retains formal learning approval. A first-person narrative is not proof of self-authored notes or a new fact authority.
+- Future M4 will trace Phase 1–6.5 goals, decisions, actions, outcomes, feedback, and learning with evidence-qualified links. Temporal proximity and model suggestions do not establish causality. M5 will show these links alongside the time tree and source comparison, while honoring revocable, use-specific Notebook permissions.
+- This update changes documentation only. M3 keeps its approved faithful-refinement scope; no Notebook connector, M4/M5 implementation, formal database deployment, or context switch is enabled.
+
+## Memory V2 M3.5 isolated model drafts (2026-10-29)
+
+- An opt-in, unregistered M3 installer supports local mock NARRATIVE and DIGEST draft jobs. Ordered source batches, persistent request IDs, source revalidation, synthetic token and cost reservations, and unknown-result refusal remain isolated from live chat. A single message may occupy a batch beyond the normal target up to hard character and token limits.
+- Model output remains `needs_review` and `system_derived_text`; checked source IDs do not prove factual fidelity. Existing model-free CLEANED, quoted NARRATIVE, and extractive DIGEST remain available. No real Provider, formal database migration, or context injection is enabled. See [M3 contract](docs/MEMORY_V2_M3.md) and [M3.5 acceptance](docs/MEMORY_V2_M35_ACCEPTANCE.md).
+
+## Memory V2 M3.6 zero-payment adapter (2026-10-29)
+
+- M3.5 is accepted as isolated engineering; real model quality and cost remain unverified. M3.6 zero-payment engineering acceptance passed 178/178 isolated regression tests. It adds an unregistered Responses adapter, separate USD trial ledger, eight fictional gold cases and human review template. No API credential was loaded, no real Provider request was sent, and the existing chat/Phase 1–6.5 path remains unchanged. See [M3.6 contract](docs/MEMORY_V2_M36.md) and [zero-payment acceptance](docs/MEMORY_V2_M36_ZERO_PAY_ACCEPTANCE.md).
+- A future paid pilot still requires separate approval of the exact model, test key, full synthetic set and proposed USD 5 cap. M4 experiential linking can proceed through its own review independently of M3.6 live model activation.
+- The proposed first live quality check is separately limited to synthetic N1, two serial generations, and a USD 0.10 recommended cap; see the [review-only execution checklist](docs/MEMORY_V2_M36_FIRST_TRIAL.md). No live input count or generation request has been made.
+
+## Memory V2 N1 trial and dialogue chronicle correction (2026-10-31)
+
+- After separate authorization, synthetic N1 completed two real `gpt-6.1-sol` Responses generations in an external isolated copy, with two required input counts and an estimated USD 0.005830 generation cost. The M3.5 output remains unreviewed and unavailable for formal recall; see [N1 results](docs/MEMORY_V2_M36_FIRST_TRIAL.md). The older “no live request” note above describes the prior preparation state.
+- NARRATIVE now targets 阿夜第一人称的高保真对话纪事. The current v3 prompt uses only “我说／她说” for attribution; the generated text rejects mixed language attribution. RAW evidence remains unchanged, while model dialogue bodies omit machine source headers. Ordered source IDs and fingerprints remain in mapping metadata, and all drafts still require human fidelity review. A detailed dialogue is not judged primarily by compression. Existing DIGEST time summaries remain separate; a versioned title, keywords and per-experience synopsis are not yet implemented. No further paid request, formal database migration, context switch or M4/M5 work occurred in this correction.
+
+## Memory V2 P1-A isolated experience entries (2026-10-31)
+
+- P1-A adds an unregistered, source-bound entry contract with stable IDs, versioned title, keywords, tags, per-experience synopsis, and a reference to an already approved NARRATIVE version. It keeps RAW and the detailed narrative in their existing authorities. Dates are derived from live sources; edits, lost access, and narrative replacement invalidate the affected entry read.
+- Human review, selective dependency tokens, and staged split/merge lineage are tested with synthetic messages and temporary SQLite. The earlier “not yet implemented” statement describes the state before P1-A. No production schema migration, context switch, model call, vector API, or M5 UI is enabled. See [the 28-feature parity ledger](docs/MEMORY_V2_FEATURE_PARITY.md).
+
+## Memory V2 P2 isolated Chronicle projection (2026-10-31)
+
+- P2 adds an unregistered, read-only L0–L5 time tree and `context_projection` for already selected Chronicle entries. The shared view checks current M1 sources, P1-A metadata and M3 review/dependencies on every read. Valid L1–L4 DIGEST versions require an explicit source-scope binding; missing or stale summaries fall back to an approved entry synopsis or title. Full RAW remains available through source-bound pages at every age.
+- P2 neither retrieves candidates nor injects the tree into chat. It does not call a model, vector service or external tool, create summaries on GET, or change the Phase 1–6.5 path. The installable browse API is not registered in `main.py`; formal database migration and M5-A UI remain separate decisions. See [P2 contract](docs/MEMORY_V2_P2.md) and [the 28-feature ledger](docs/MEMORY_V2_FEATURE_PARITY.md).
+- Isolated P2 tests passed 23/23; the final backend regression passed 224/224. The current code has not been checked against a live database, real provider or browser UI.
+
+## Memory V2 M5-A0 isolated read-only calendar (2026-11-01)
+
+- An optional `/chronicle` Vue page now connects to an independent synthetic SQLite API. It browses the L0–L5 tree, reviewed period DIGEST and per-experience metadata, switches approved NARRATIVE/CLEANED/RAW, compares RAW beside the chronicle, and pages long sources. Keyword/date search, previous/next, missing/stale/draft warnings, and light/dark mode work in the isolated browser demo.
+- Set `VITE_YOSAKI_CHRONICLE_A0=1` only in the test frontend and run `scripts/chronicle_a0_demo.py` for a temporary localhost database. `main.py` does not install the new read-only routes. No formal database, chat context, model, vector or Phase 1–6.5 behavior is changed. See [M5-A0 runbook and limits](docs/MEMORY_V2_M5A0.md) and [the 28-feature ledger](docs/MEMORY_V2_FEATURE_PARITY.md).
+- P2 still uses a period DIGEST only when M2 has selected all of its members. Future P3/P4 may let M2 explicitly select a period candidate after relevance, permissions and budget checks; P2 must not expand the selected source set by itself.
+- M5-A0 API tests passed 6/6; the full isolated backend suite passed 230/230. Both flag-on and flag-off frontend builds passed. Browser checks covered L0–L5, digest and RAW paging, source-change 409 clearing, light/dark mode and a 390×844 viewport. These are synthetic isolated results, not formal deployment acceptance.
+
+## Memory V2 M5-A1 isolated calendar reading and projection preview (2026-11-07)
+
+- The same optional `/chronicle` page now has a collapsible year/month/period hierarchy, ISO-week date ranges, and a diagnostics area. Reviewed rule-based period DIGEST is explicitly labeled extractive; its source IDs, roles and states sit in expandable metadata rather than the main reading text. RAW/NARRATIVE comparison, paging and light/dark styling remain.
+- Explicitly selected synthetic experiences can be previewed at a chosen observation time and estimated Token budget. The unregistered read-only endpoint calls P2 `context_projection()` directly and reports the chosen version, current source qualification, fallback and rejection reasons, and cross-view deduplication. It neither selects the whole archive nor sends memory to the formal chat model.
+- See [M5-A1 isolated contract and screenshots](docs/MEMORY_V2_M5A1.md) and the [28-feature ledger](docs/MEMORY_V2_FEATURE_PARITY.md). The formal database, M2/P4 injection path, models, tools and Phase 1–6.5 remain untouched.
+- A1 targeted tests passed 17/17 (including inherited baseline cases); full isolated backend regression passed 247/247. Python compilation and both calendar-flag-on/off frontend builds passed. Browser checks covered the year/month/week hierarchy, source metadata disclosure, period preview, and light/dark presentation with synthetic data.
+
+## Memory V2 H1–H4 synthetic historical import pipeline (2026-11-07)
+
+- An installable, isolated Chronicle import API and optional calendar wizard now preview YOSAKI JSON v1/v2, strict Markdown/TXT and bounded ZIP files; Markdown/TXT are marked lossy. RAW import is explicit, batched at 100 messages per transaction, resumable and receipt-backed. Imported `archive_only` conversations are rejected by live chat/list, regenerate, tool and legacy export paths. Date-only and unverified local times remain imprecise; import time is never presented as event time.
+- After RAW, the owner may explicitly index safe messages, revise 30-minute boundary suggestions, and create stable P1-A draft entries. Unorganized RAW is browsable without a reviewed NARRATIVE; drafts do not become formal memories or bypass existing review. The wizard remains isolated; `main.py` does not install the import routes or run the import migration.
+- See [historical import contract and capacity gate](docs/MEMORY_V2_HISTORICAL_IMPORT.md), [consumer audit](docs/MEMORY_V2_IMPORT_AUDIT.md), and [28-feature ledger](docs/MEMORY_V2_FEATURE_PARITY.md). The V1 64 MiB `.ybackup` limit motivated H5-A; V2 remains blocked from formal use by the H5-A1 target-environment gate. No private history, formal database or paid model was used in this increment.
+- Final synthetic verification: external source-copy import tests 14/14, full temporary-DB backend regression 261/261, both Chronicle flag builds, and a localhost browser import through two stable draft entries. The 5,000-message benchmark and known limits are recorded in the import contract.
+
+## Memory V2 H5-A isolated large-backup work (2026-11-07)
+
+- V2 adds a default-off encrypted backup path, bounded-memory file processing, and independent restoration of V1/V2 files into a new directory. The old upload route now refuses to replace the active database. `YOSAKI_H5A_ENABLED=1` is for isolated validation only; formal migration and H5-B private-history testing remain separate approvals.
+- The V2 file uses SQLite online backup, redaction only in the snapshot, and whole-file AES-256-GCM authentication. Browser V2 download uses a native file download; upload verifies an isolated copy. With H5-A enabled, local scheduled backup uses V2, while files above 64 MiB are not uploaded through the GitHub Contents API. See [H5-A format and recovery contract](docs/H5A_LARGE_BACKUP.md).
+
+### H5-A1 target recovery gate
+
+- Frozen-source isolated regression passed 273/273, including the final temporary-directory marker change. Synthetic restore under a new data directory and new key read ordinary business data; credential fields remained excluded. The H5-A1 review found remaining formal activation gates for existing work-directory ACLs, API quotas/timeouts and multi-worker tickets, 16 GiB capacity, and same-process feedback-worker resume. See [H5-A1 validation and H5-B boundary](docs/H5A1_TARGET_RECOVERY_GATE.md). No formal database restore or private-history import was performed.
+
+### H5-A2 isolated admission hardening
+
+- H5 V2 now refuses broad work-directory ACLs and unverified encryption, checks upload size before multipart parsing, reserves combined temporary space, serializes heavy backup operations, and uses a single-worker process lock. Download tickets moved to one-use POST forms; running prepare/verify can be cancelled and have deadlines. The browser falls back to V1 only when V2 is explicitly disabled. The format's 16 GiB limit is theoretical; the temporary 1 GiB operational cap and target encrypted volume remain unaccepted for formal use. See [H5-A2 gate and test record](docs/H5A2_FORMAL_GATE.md). H5-B private-history files remain out of scope.
+
+### H5-B first-file isolation and M1 order repair
+
+- The authorized Chronicle Markdown adapter preserved the specified historical file's 130 messages, original ordinal and local timestamp text. H2 RAW import took place only in a retained isolated database. H3.1 boundaries were confirmed. The first H3.2 attempt stopped on M1 segment ordering; after the isolated order repair, a **new work database made from the pre-H3.2 snapshot** was explicitly migrated and rebuilt, then 13 progressive P1-A2 drafts were created from the confirmed ranges. Titles remain system suggestions; the drafts have no synopsis, narrative, review or formal recall eligibility. The original H2 database and snapshots remain untouched. See [H5-B report](docs/H5B_REAL_SAMPLE_REPORT.md).
+- M1's isolated order repair validates a completed H2 file's full receipt manifest and orders its messages by integer ordinal within file and conversation scope. It preserves native-message and activity ordering, keeps search relevance separate, signs pagination cursors, and requires explicit migration and rebuild of old M1 indexes. The repair is not a formal database migration or H3.2 completion. See [M1 contract](docs/MEMORY_V2_M1.md).
+- Final synthetic isolated verification: M1 order tests 7/7, P1-A2 metadata tests 22/22, full backend regression 327/327, and frontend type check/build passed. The real H5-B database and snapshots were not opened during this repair.
+# P1-A2 隔离增量（2026-11-08）
+
+草稿列表的撤权分页问题已完成定向修复；最终源码专项 26/26、完整后端隔离回归 320/320、前端类型检查与构建通过。P1-A2 仅完成隔离工程验收，尚未正式启用；详见契约文档的复现和修复记录。
+
+渐进条目支持仅来源与标题的草稿、独立字段修订、角色词库、显式加工任务及元数据候选适配。契约和验收边界见 [P1-A2](docs/MEMORY_V2_P1A2.md)。正式 main.py 不注册新 API；H5-B 真实 RAW 和快照保持原状。个人策展、真实模型、正式迁移和上下文接入继续另行审批。
+# Voice V1-A（2026-11-08）
+
+已加入默认关闭的 ElevenLabs 声音档案基础设施：角色 Voice ID、声音人格与配置版本、首次第三方处理告知和撤销、后端密钥状态、隔离快照剔除确认记录，以及保留原设备语音的设置界面。`YOSAKI_VOICE_ENABLED=1` 只应在隔离数据目录验证；正式库迁移另行批准。真实 ElevenLabs API 测试（V1-B）尚未授权，应用中的测试端点明确拒绝真实请求，诊断脚本默认为零请求 dry-run。V2 消息朗读、V4 实时通话均尚未实现。完整阶段边界见 `docs/VOICE_SYSTEM_PLAN.md`。
+
+
+R2-C 准备更新（2026-11-10）：`YOSAKI_BACKGROUND_TASKS_ENABLED=0` 在任务创建前关闭反馈、心理状态、定时备份的自动 startup 轮询；未设置默认 1 保持既有入口兼容，非法值拒绝。Development 专用入口强制设置进程内值 0；生命周期及 shutdown 保留。此开关不禁止用户显式业务 API。专项 4/4、完整隔离后端 349/349 通过；正式日常库初始化与服务切换尚未执行。执行与回退顺序见 `docs/R2C_EXECUTION_CHECKLIST.md`。
+
+### Work 本机交接探针（2026-11-14）
+仅供无模型本机连通性验证，尚未接入桌面会话，说明见 [探针记录](scripts/work_handoff_probe/README.md)。
+
+
+
+### Memory V2 当前收口依据
+
+统一执行与C1～C10实际状态见 [MEMORY_V2_EXECUTION_PLAN](docs/MEMORY_V2_EXECUTION_PLAN.md)。原始规则和前后样例见 [MEMORY_ENTRY_ORIGINAL_RULES](docs/requirements/MEMORY_ENTRY_ORIGINAL_RULES.txt)；这是本地需求材料，不能自动作为公开夹具或外发。梗概与完整精修对话独立。第三轮已受控加载 http://127.0.0.1:5173/chronicle ，付费加工关闭；真实梗概/周期/向量/聊天验收仍有缺口，不等于C1～C10全部完成。
+
+## 2026-11-18～19 聊天增强隔离候选
+
+P1～P4 的请求记录、保留候选的重生成、消息修订／分支、引用／翻译、附件及可选上下文预算已在外部候选实现。默认保留旧角色策略，自动摘要与网页关闭，套餐输出硬上限未核验。当前未迁移日常库或切换服务。
+
+请从 `docs/CHAT_ENHANCEMENT_CANDIDATE.md` 查看逐项行为与证据，从 `docs/CHAT_ENHANCEMENT_LOAD_CHECKLIST.md` 查看实际加载和真实合成验证清单。原有 Memory、Voice 和备份准入继续适用。

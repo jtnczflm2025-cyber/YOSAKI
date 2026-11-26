@@ -32,10 +32,12 @@ def get(db, character_id, vocabulary_id):
 
 def write(db, character_id, kind, name, language, editor_id, *, vocabulary_id=None,
           expected_version=None, dimension=None, definition='', aliases=(), status='active',
-          merged_into=None, evidence=(), seed_id=None):
+          merged_into=None, evidence=(), seed_id=None, seed_provenance='user_corrected'):
     from .memory_v2_metadata import _owner
     from .memory_v2_entries import _begin
     _begin(db); _owner(db, editor_id)
+    if seed_provenance!='user_corrected' and (seed_provenance!='system_suggested' or not seed_id or vocabulary_id):
+        raise ValueError('vocabulary_seed_invalid')
     if not db.execute('SELECT 1 FROM characters WHERE id=? AND enabled=1', (character_id,)).fetchone():
         raise ValueError('role_unavailable')
     if (kind not in ('category','tag','keyword') or not isinstance(name,str) or not name.strip() or len(name)>80
@@ -75,7 +77,7 @@ def write(db, character_id, kind, name, language, editor_id, *, vocabulary_id=No
         db.execute('INSERT INTO mv3_vocabulary VALUES(?,?,?,?)', (vid,character_id,kind,version))
         db.execute('INSERT INTO mv3_vocabulary_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (vid,version,dimension,language,name,definition,json.dumps(aliases,ensure_ascii=False),status,
-             merged_into,semantic,alias_token,c.token([name]),'nfkc-casefold-v1','user_corrected',
+             merged_into,semantic,alias_token,c.token([name]),'nfkc-casefold-v1',seed_provenance,
              json.dumps(evidence,ensure_ascii=False),editor_id,m3._now()))
     else:
         db.execute('UPDATE mv3_vocabulary SET current_version=? WHERE id=?', (version,vid))

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, watch, computed, onMounted, onBeforeUnmount } from 'vue'
+import type {ReviewChange} from './chronicleReviewChange'
 const props = defineProps<{ characterId: number; entryId: string }>()
-const emit = defineEmits<{ saved: [] }>()
+const emit = defineEmits<{ removed:[id:string]; saved: []; revised:[change:ReviewChange] }>()
 type Field = { value: unknown; token: string; lifecycleStatus: string }
-type RecordView = { entry: { entryId: string; versionId: string; qualifications?:{p2Projection:boolean}; fields: Record<string, Field>; timeEvidence: {occurredAt?:string;occurredDate?:string;rawTime?:string;precision:string;timezoneBasis?:string}[] }; raw: {kind:string;id:string;speaker:string;text:string}[]; narrative: null | {id:string;body:string;input_hash:string;output_hash:string;status:string;review_status:string} }
+type RecordView = { removalToken:string; entry: { entryId: string; versionId: string; qualifications?:{p2Projection:boolean}; fields: Record<string, Field>; timeEvidence: {occurredAt?:string;occurredDate?:string;rawTime?:string;precision:string;timezoneBasis?:string}[] }; raw: {kind:string;id:string;speaker:string;text:string}[]; narrative: null | {id:string;body:string;input_hash:string;output_hash:string;status:string;review_status:string} }
 const record = ref<RecordView|null>(null)
 const title = ref(''), synopsis = ref(''), dialogue = ref('')
 const message = ref(''), error = ref(''), busy = ref(false), dirty = ref(false), rawOpen = ref(false)
@@ -92,7 +93,7 @@ async function request(path:string, method='GET', body?:unknown) {
   if (!response.ok) {
     const detail=await response.json().catch(()=>({}))
     const reason=String(detail.detail || '')
-    const errors:Record<string,string>={version_conflict:'另一窗口已更新这条记忆，当前编辑已保留。请先复制要保留的修改，再重新打开核对最新版本。',review_snapshot_changed:'保存版本已变化，未确认任何旧内容；请重新读取当前版本。',literal_keyword_not_in_source:'有关键词未逐字出现在当前来源中，未保存；请核对原文，编辑已保留。',keyword_invalid:'关键词不能为空且每个不得超过80字符；编辑已保留。',vocabulary_unavailable:'所选分类或标签已停用或不可用，未保存；请核对词库，编辑已保留。',vocabulary_not_found:'所选词库项目已不存在，未保存；编辑已保留。',source_outside_entry:'所选分类标签依据已不属于当前条目，未保存；请重新打开核对。',duplicate_label:'分类或标签重复，未保存；编辑已保留。',synopsis_real_scope_over_limit:'完整来源超出本次单批容量；未截断或发送，请先按完整经历边界整理。',synopsis_input_over_limit:'完整来源包装超出容量，未发送。',synopsis_diagnostic_sink_required:'公开响应留存尚未配置，未发送。',paid_generation_not_enabled:'模型加工尚未开启，未发送。',synopsis_input_token_limit:'实际输入计数超限，未生成。',synopsis_trial_not_claimable:'任务已停止、未知或正在执行，不会再次派发。',semantic_scope_unknown:'同一范围有未明请求，预留保留，不会补发。',chronicle_daily_rates_verification_required:'需先核对当日费率，未发送。'}
+    const errors:Record<string,string>={import_still_running:'本批正在整理，完成后可删除。',version_conflict:'另一窗口已更新这条记忆，当前编辑已保留。请先复制要保留的修改，再重新打开核对最新版本。',review_snapshot_changed:'保存版本已变化，未确认任何旧内容；请重新读取当前版本。',literal_keyword_not_in_source:'有关键词未逐字出现在当前来源中，未保存；请核对原文，编辑已保留。',keyword_invalid:'关键词不能为空且每个不得超过80字符；编辑已保留。',vocabulary_unavailable:'所选分类或标签已停用或不可用，未保存；请核对词库，编辑已保留。',vocabulary_not_found:'所选词库项目已不存在，未保存；编辑已保留。',source_outside_entry:'所选分类标签依据已不属于当前条目，未保存；请重新打开核对。',duplicate_label:'分类或标签重复，未保存；编辑已保留。',synopsis_real_scope_over_limit:'完整来源超出本次单批容量；未截断或发送，请先按完整经历边界整理。',synopsis_input_over_limit:'完整来源包装超出容量，未发送。',synopsis_diagnostic_sink_required:'公开响应留存尚未配置，未发送。',paid_generation_not_enabled:'模型加工尚未开启，未发送。',synopsis_input_token_limit:'实际输入计数超限，未生成。',synopsis_trial_not_claimable:'任务已停止、未知或正在执行，不会再次派发。',semantic_scope_unknown:'同一范围有未明请求，预留保留，不会补发。',chronicle_daily_rates_verification_required:'需先核对当日费率，未发送。'}
     throw new Error(errors[reason] || (response.status === 409 ? '内容、来源或任务条件已变化；原有内容保留，请重新打开检查状态。' : response.status === 401 ? '请重新登录。' : '操作未完成，请查看服务状态。'))
   }
   return await response.json()
@@ -122,9 +123,26 @@ async function act(action:()=>Promise<void>, success:string, area:FeedbackArea='
   busy.value=true; error.value='';message.value=''
   try { await action(); message.value=success; emit('saved') } catch(e) { error.value=(e as Error).message } finally {busy.value=false}
 }
+async function removeEntry() {
+  const current=record.value
+  if (!current || busy.value || hasUnsaved.value) return
+  const id=props.entryId, cid=props.characterId
+  if (!await askConfirmation(`删除「${title.value}」？这条经历将从批次、年历和记忆召回中移除。原始聊天归档会保留。`)) return
+  if (current!==record.value || id!==props.entryId || cid!==props.characterId) return
+  busy.value=true
+  try {
+    await request(`${url()}/remove`,'POST',{characterId:cid,expectedVersion:current.entry.versionId,previewToken:current.removalToken})
+    emit('removed',id)
+  } catch(e) {error.value=(e as Error).message} finally {busy.value=false}
+}
 async function saveText() {
   if(!record.value) return
   const current=record.value
+  const fields=[
+    {label:'标题',before:String(current.entry.fields.title.value??''),after:title.value},
+    {label:'梗概',before:String(current.entry.fields.synopsis.value??''),after:synopsis.value},
+    {label:'精修正文',before:current.narrative?.body??'',after:dialogue.value}
+  ].filter(field=>field.before!==field.after)
   const savedArea:FeedbackArea=dialogue.value!==(current.narrative?.body ?? '')?'narrative':synopsis.value!==(current.entry.fields.synopsis.value ?? '')?'synopsis':'text'
   await act(async()=>{
     if(!dialogue.value.trim() && current.narrative?.body) throw new Error('精修记录不能为空；原有记录未删除，请保留正文或取消修改。')
@@ -139,6 +157,11 @@ async function saveText() {
       await request(`${url()}/narrative`,'POST',{characterId:props.characterId,expectedVersion:current.entry.versionId,expectedNarrativeVersionId:current.narrative?.id ?? null,body:dialogue.value})
     }
     await load(true)
+    const saved=record.value
+    if(saved && fields.length && saved.entry.entryId===current.entry.entryId){
+      const values:Record<string,string>={'标题':String(saved.entry.fields.title.value??''),'梗概':String(saved.entry.fields.synopsis.value??''),'精修正文':saved.narrative?.body??''}
+      if(fields.every(field=>field.after===values[field.label]))emit('revised',{characterId:props.characterId,entryId:saved.entry.entryId,version:saved.entry.versionId,narrativeId:saved.narrative?.id??null,fields})
+    }
   },'修改已保存并重新读取；修改过的内容需重新确认，其余状态见各分区。',savedArea)
 }
 async function cancelEdit() { if(!dirty.value || await askConfirmation('放弃未保存的文字修改？')) void load(true) }
@@ -353,6 +376,7 @@ defineExpose({dirty:hasUnsaved})
         </div><label>保留理由（可选）<input v-model="choices.reason" maxlength="1000" placeholder="说明为什么希望保留" /></label><div class="editor-actions"><button class="c-primary" @click="saveChoices">保存记忆设置</button></div></fieldset>
         <p v-if="!choices.installed" class="editor-warning">记忆设置的独立存储尚未安装；当前不能保存，不会自动迁移。</p><p class="editor-help">重要约定请先核对梗概中的条件，再决定是否保留。取消常驻时也请检查是否仍勾选固定参考。</p><p v-if="feedbackArea==='curation' && message" class="editor-feedback" role="status">{{message}}</p>
       </section>
+      <div class="editor-actions"><button :disabled="busy || hasUnsaved || !record.removalToken" @click="removeEntry">删除这条经历</button><small>保留原始聊天归档。</small></div>
       <details class="editor-disclosure developer-details"><summary>开发详情</summary><div class="disclosure-content"><pre>{{ {version:record.entry.versionId,narrativeStatus:record.narrative?.status,fieldStatus:Object.fromEntries(Object.entries(record.entry.fields).map(([k,v])=>[k,v.lifecycleStatus]))} }}</pre></div></details>
     </div>
     <p v-else-if="!error" role="status" class="editor-help">正在读取当前条目与来源…</p>

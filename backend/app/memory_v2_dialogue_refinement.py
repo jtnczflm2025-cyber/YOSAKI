@@ -175,6 +175,7 @@ def invalid_reason(db, version, character_id):
         if not mapping or len(mapping) != len(refs):
             return 'dialogue_mapping_missing'
         parts, cursor = [], 0
+        validated_sets, file_cache = {}, {}
         for row, ref in zip(mapping, refs):
             if (row['ruleVersion'] != version['rule_version'] or row['sourceKind'] != ref['source_kind']
                     or row['sourceId'] != ref['source_id'] or row['speaker'] != ref['source_role']
@@ -182,10 +183,13 @@ def invalid_reason(db, version, character_id):
                 return 'dialogue_mapping_changed'
             entry = metadata._entry(db, row['entryId'], character_id)
             source_set = metadata._set(db, entry)
-            metadata._validate_sources(db, entry, source_set)
+            stamp = (source_set['id'], db.total_changes, db.execute('PRAGMA data_version').fetchone()[0])
+            if validated_sets.get(entry['id']) != stamp:
+                metadata._validate_sources(db, entry, source_set)
+                validated_sets[entry['id']] = stamp
             if row['sourceToken'] != source_set['source_token']:
                 return 'dialogue_source_changed'
-            raw = m3.live_source(db, character_id, ref['source_kind'], ref['source_id']).text
+            raw = m3.live_source(db, character_id, ref['source_kind'], ref['source_id'], file_cache).text
             prefix = '我说：' if row['speaker'] == 'assistant' else 'イキヤ说：'
             if version['rule_version'] == RULE:
                 prefix = row['prefix']

@@ -15,6 +15,7 @@ from . import memory_v2_jobs as jobs
 
 EVENT='synopsis_one_replacement_v1'
 OLD_EVENT='synopsis_original_business_retired_v1'
+IMPORT_PLAN_EVENT='chronicle_import_plan_replacement_v2'
 CHAIN_EVENT='synopsis_stream_replacement_chain_v2'
 CHAIN_8192_EVENT='synopsis_stream_replacement_chain_capacity_v3'
 _CHAIN_EVENTS=(CHAIN_EVENT, CHAIN_8192_EVENT)
@@ -35,6 +36,8 @@ def _binding(db, job_id):
     payload=json.loads(row['payload_json'])
     binding=payload.get('readSet',{}).get('replacement')
     if not binding: return None
+    if binding.get('version')==IMPORT_PLAN_EVENT:
+        return _plan_binding(db,row,payload,binding)
     if binding.get('version') in _CHAIN_EVENTS:
         return _chain_binding(db,row,payload,binding)
     if (processing._hash(['a3-job-v1',row['character_id'],payload])!=row['input_hash'] or
@@ -67,6 +70,71 @@ def _binding(db, job_id):
         "SELECT 1 FROM mv3_a3_audit WHERE job_id=? AND event='dispatch_owner_binding_v1' AND evidence_hash=?",
         (old['id'],owner_hash)).fetchone()): return None
     return binding
+
+
+def _plan_binding(db,row,payload,binding):
+    from . import memory_v2_import_processing as flow
+    old=db.execute('SELECT * FROM mv3_jobs WHERE id=?',(binding['originalJobId'],)).fetchone()
+    if not old or old['scope_key']!=row['scope_key'] or old['character_id']!=row['character_id']:return None
+    prior=json.loads(old['payload_json'])
+    read=payload['readSet']
+    original=prior.get('readSet',{})
+    if (payload.get('executionKind')!=flow.RULE or prior.get('executionKind')!=flow.RULE
+            or prior.get('fields')!=['synopsis'] or set(payload.get('fields',[]))!={'title','synopsis'}
+            or json.loads(row['write_set_json'])!={'fields':payload['fields']}
+            or processing._hash(['a3-job-v1',row['character_id'],prior])!=old['input_hash']
+            or processing._canonical(original)!=old['read_set_json']
+            or processing._canonical(read)!=row['read_set_json']
+            or processing._hash(['a3-job-v1',row['character_id'],payload])!=row['input_hash']
+            or old['input_hash']!=binding['oldHash'] or read.get('entry')!=prior.get('targetId')
+            or read.get('entry')!=payload.get('targetId')
+            or any(original.get(key)!=read.get(key) for key in ('batch','source','boundary','realConfig'))
+            or read.get('realConfig',{}).get('ownerId')!=binding['owner']):return None
+    child=db.execute('SELECT * FROM mv3_model_chunks WHERE job_id=? AND ordinal=0',(old['id'],)).fetchone()
+    if (not child or child['request_id']!=binding['request'] or child['dispatch_attempt_id']!=binding['attempt']
+            or child['input_hash']!=binding['input']):return None
+    owner_hash=jobs._dispatch_owner_hash(binding['owner'],old['id'],row['character_id'],0,
+        child['request_id'],child['dispatch_attempt_id'],child['input_hash'])
+    digest=processing._hash([IMPORT_PLAN_EVENT,row['id'],binding])
+    for jid,event,evidence in ((old['id'],'dispatch_owner_binding_v1',owner_hash),
+                               (row['id'],IMPORT_PLAN_EVENT,digest),(old['id'],OLD_EVENT,digest)):
+        if not db.execute('SELECT 1 FROM mv3_a3_audit WHERE job_id=? AND event=? AND evidence_hash=?',
+                          (jid,event,evidence)).fetchone():return None
+    return binding
+
+
+def create_import_plan_replacement(db,batch,eid,owner,original_id,*,approval_id):
+    """Trusted, explicitly approved supplement only. No HTTP or scheduler entry point."""
+    from . import memory_v2_import_processing as flow
+    processing._transaction(db)
+    cid,bound_owner=flow.group(db,batch)
+    if owner!=bound_owner or not isinstance(approval_id,str) or not approval_id.strip():raise ValueError('replacement_owner_required')
+    old=processing._owned(db,original_id,cid)
+    prior=json.loads(old['payload_json'])
+    detail,_,_,read=flow.material(db,batch,eid,supplement_title=True)
+    children=db.execute('SELECT * FROM mv3_model_chunks WHERE job_id=?',(original_id,)).fetchall()
+    if (len(children)!=1 or old['status'] not in ('failed','unknown') or old['cancel_intent']
+            or prior.get('targetId')!=eid or prior.get('executionKind')!=flow.RULE
+            or prior.get('fields')!=['synopsis'] or prior['readSet'].get('batch')!=batch
+            or children[0]['state'] not in ('unknown','possibly_dispatched','rejected')
+            or not children[0]['dispatch_attempt_id'] or detail['fields']['synopsis'].get('fieldId')
+            or db.execute('SELECT 1 FROM mv3_a3_migration_holds WHERE job_id=?',(original_id,)).fetchone()):
+        raise ValueError('replacement_original_ineligible')
+    require_business_current(db,original_id)
+    synopsis.guard_field(db,eid,cid,except_id=original_id)
+    processing._block_overlaps(db,cid,old['scope_key'],['title'])
+    child=children[0]
+    binding=dict(version=IMPORT_PLAN_EVENT,approval=approval_id,owner=owner,originalJobId=original_id,
+                 oldHash=old['input_hash'],request=child['request_id'],attempt=child['dispatch_attempt_id'],input=child['input_hash'])
+    read['replacement']=binding
+    jid=processing._create_record(db,cid,'entry',eid,['synopsis','title'],read,rule_version=flow.RULE,
+        input_version='ordered-import-receipts-v2-supplement',execution_kind=flow.RULE)
+    digest=processing._hash([IMPORT_PLAN_EVENT,jid,binding])
+    for job,event in ((original_id,OLD_EVENT),(jid,IMPORT_PLAN_EVENT)):
+        db.execute("INSERT INTO mv3_a3_audit(job_id,event,evidence_hash,prior_status,created_at) VALUES(?,?,?,?,datetime('now'))",
+                   (job,event,digest,old['status'] if job==original_id else 'queued'))
+    if not _binding(db,jid):raise ValueError('replacement_source_or_identity_changed')
+    return jid
 
 def may_ignore_original(db, job_id, original_id):
     binding=_binding(db,job_id)

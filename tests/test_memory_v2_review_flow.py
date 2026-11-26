@@ -21,6 +21,28 @@ class ReviewFlow(unittest.TestCase):
   n=v['narrative'];return self.client.post(self.url+'/confirm-narrative',json=dict(characterId=self.cid,expectedVersion=v['entry']['versionId'],versionId=n['id'],inputHash=n['input_hash'],outputHash=n['output_hash']))
  def edit(self,v,body):
   return self.client.post(self.url+'/narrative',json=dict(characterId=self.cid,expectedVersion=v['entry']['versionId'],expectedNarrativeVersionId=v['narrative']['id'] if v['narrative'] else None,body=body))
+ def test_remove_binds_visible_version_and_preserves_archived_sources(self):
+  from backend.app import memory_v2_import_schema, memory_v2_jobs
+  with app_module.connect() as db:
+   memory_v2_import_schema.init_db(db);memory_v2_jobs.init_db(db)
+  old=self.create()
+  published=self.confirm(old).json()
+  with app_module.connect() as db:
+   m.review_field(db,self.eid,self.cid,'title',published['entry']['fields']['title']['token'],1)
+   m.publish(db,self.eid,self.cid,published['entry']['versionId'],1)
+  def remove(view,cid):
+   return self.client.post(self.url+'/remove',json=dict(characterId=cid,
+       expectedVersion=view['entry']['versionId'],previewToken=view['removalToken']))
+  self.assertEqual(remove(old,self.cid).status_code,409)
+  current=self.view()
+  self.assertNotEqual(remove(current,self.cid+999).status_code,200)
+  with app_module.connect() as db:
+   before=list(map(tuple,db.execute('SELECT id,content FROM messages ORDER BY id')))
+  self.assertEqual(remove(current,self.cid).status_code,200)
+  self.assertEqual(remove(current,self.cid).status_code,409)
+  with app_module.connect() as db:
+   with self.assertRaises(ValueError):m.read_active(db,self.eid,self.cid)
+   self.assertEqual(before,list(map(tuple,db.execute('SELECT id,content FROM messages ORDER BY id'))))
  def test_stale_narrative_confirmation_cannot_activate_previous_draft(self):
   old=self.create()
   with app_module.connect() as db:

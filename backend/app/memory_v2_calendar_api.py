@@ -10,6 +10,7 @@ from . import memory_v2_derivation as m3
 from . import memory_v2_entries as entries
 from . import memory_v2_time_projection as p2
 from .memory_v2_contract import SourceRef, experience_key
+from .memory_v2_read import validation_scope
 
 
 class ProjectionPreviewInput(BaseModel):
@@ -146,7 +147,7 @@ def install(app, connect, authenticate):
 
     @router.get("/status")
     def status(characterId: int):
-        with connect() as db:
+        with connect() as db, validation_scope(db):
             role = db.execute("SELECT 1 FROM characters WHERE id=? AND enabled=1", (characterId,)).fetchone()
             if not role:
                 raise HTTPException(404, "角色不可访问")

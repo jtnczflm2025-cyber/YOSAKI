@@ -24,3 +24,6 @@ async function save(){if(!value.value)return;busy.value=true;error.value='';try{
   <p role="status">{{error}}</p>
  </section>
 </template>
+<style scoped>
+.voice-section p { font-size:17px; line-height:1.75; overflow-wrap:anywhere; }
+</style>

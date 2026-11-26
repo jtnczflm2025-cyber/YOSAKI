@@ -168,7 +168,10 @@ def draft_view(db, character_id, entry_id):
     candidate = _draft_narrative(db, character_id, detail)
     narrative = ({k: candidate[k] for k in ('id', 'body', 'input_hash', 'output_hash', 'status', 'review_status')}
                  if candidate else None)
-    return {'entry': detail, 'raw': raw, 'narrative': narrative}
+    return {'entry': detail, 'raw': raw, 'narrative': narrative,
+            'removalToken': metadata.c.token([character_id, entry_id, detail['versionId'], detail['timeToken'],
+                detail['sourceToken'], detail['qualifications'], narrative and narrative['id'],
+                [(key, field['lifecycleStatus']) for key,field in sorted(detail['fields'].items())]])}
 
 
 def confirm_narrative(db, entry_id, payload, owner_id):
@@ -668,6 +671,15 @@ def install(app, connect, authenticate, *, allowed_origins=(), provider_factory=
                 for s in db.execute('SELECT * FROM mv2_import_segments WHERE file_id=? ORDER BY ordinal',(file_id,))]
             return {'sourceSnapshot':snapshot,'messageCount':len(records),'segments':segments}
 
+    @router.post('/imports/{batch_id}/{file_id}/reading-drafts')
+    def reading_drafts(batch_id: str, file_id: str, characterId: int, user=Depends(identity)):
+        from . import memory_v2_import_reading
+        try:
+            with connect() as db:
+                return memory_v2_import_reading.create(db,batch_id,file_id,characterId,user['id'])
+        except ValueError as exc:
+            raise HTTPException(409,str(exc)) from None
+
     @router.post('/imports/{batch_id}/{file_id}/boundaries')
     def confirm_boundaries(batch_id: str, file_id: str, p: Boundary, user=Depends(identity)):
         from . import memory_v2_import as importer
@@ -744,6 +756,24 @@ def install(app, connect, authenticate, *, allowed_origins=(), provider_factory=
             _check_narrative_snapshot(db, p.characterId, detail, p.expectedNarrativeVersionId)
             return finite.create(db, p.characterId, user['id'], entry_id, p.expectedVersion)
         return call(create, p.characterId, user['id'])
+
+    @router.post('/entries/{entry_id}/remove')
+    def remove_entry(entry_id: str, p: ReviewSelection, user=Depends(identity)):
+        def remove(db):
+            view = draft_view(db, p.characterId, entry_id)
+            if view['removalToken'] != p.previewToken or view['entry']['versionId'] != p.expectedVersion:
+                raise ValueError('version_conflict')
+            busy = db.execute('''SELECT 1 FROM mv2_import_segments s JOIN mv3_jobs j ON j.id=s.batch_id
+                WHERE s.entry_id=? AND j.status IN ('running','queued')''', (entry_id,)).fetchone()
+            if busy:
+                raise ValueError('import_still_running')
+            changed = db.execute('''UPDATE mv3_entries SET status='archived',active_version_id=NULL
+                WHERE id=? AND character_id=? AND draft_version_id=? AND status IN ('draft','active')''',
+                (entry_id,p.characterId,p.expectedVersion))
+            if changed.rowcount != 1:
+                raise ValueError('version_conflict')
+            return {'removed': True}
+        return call(remove, p.characterId, user['id'])
 
     @router.post('/entries/{entry_id}/date')
     def correct_date(entry_id: str, p: DateCorrection, user=Depends(identity)):
@@ -838,7 +868,11 @@ def install(app, connect, authenticate, *, allowed_origins=(), provider_factory=
             metadata._validate_sources(db,entry,metadata._set(db,entry))
             sources=[dict(r,text=m3.live_source(db,characterId,r['kind'],r['id']).text) for r in refs_for(detail)]
             fields=metadata._fields(db,detail['versionId']); field=fields.get('keywords')
-            return dict(suggestions.suggest(sources),versionId=detail['versionId'],sourceToken=detail['sourceToken'],
+            from . import memory_v2_import_filing as filing
+            current=detail['fields']['keywords']
+            result=(suggestions.with_topics(sources,current['value']) if field and
+                    field['rule_version']==filing.VERSION and current.get('value') else suggestions.suggest(sources))
+            return dict(result,versionId=detail['versionId'],sourceToken=detail['sourceToken'],
                 current=detail['fields']['keywords'],savedRuleVersion=field['rule_version'] if field else None,
                 savedProvenance=field['provenance'] if field else None)
         return call(preview,characterId,user['id'])
@@ -915,6 +949,13 @@ def install(app, connect, authenticate, *, allowed_origins=(), provider_factory=
         with connect() as db:
             owners=[r[0] for r in db.execute('SELECT id FROM users')]
         if len(owners)==1: await run_in_threadpool(resume_local,owners[0])
+        import asyncio
+        from . import memory_v2_import_processing as imports
+        with connect() as db:
+            pending=[r[0] for r in db.execute("SELECT id FROM mv3_jobs WHERE kind=? AND status IN ('queued','running') ORDER BY created_at",(imports.BATCH,))]
+        async def resume_imports():
+            for batch in pending:await imports.run(connect,batch)
+        if pending:app.state.import_recovery=asyncio.create_task(resume_imports())
     app.add_event_handler('startup',recover_on_start)
     if calendar_sync is not None:
         app.add_event_handler('startup',calendar_sync.start)

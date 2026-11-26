@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh">
+<head><meta charset="UTF-8"><title>V4 单次流式验证</title></head>
+<body>
+  <main>
+    <h1>V4 单次流式验证</h1>
+    <p>独立浏览器入口。仅在一次性授权入口已启动后连接；按钮只允许点击一次。</p>
+    <p id="scope"></p>
+    <pre id="text"></pre>
+    <button id="start">连接并播放一次</button>
+    <button id="stop">立即停止</button>
+    <output id="state">idle</output>
+    <pre id="metrics"></pre>
+  </main>
+  <script type="module" src="/src/voice/voiceV4Real.ts"></script>
+</body>
+</html>

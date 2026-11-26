@@ -12,6 +12,8 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
+from .autonomy import ControlInput
+
 router = APIRouter(prefix="/api/desires")
 
 DRIVES = (
@@ -36,6 +38,10 @@ TERMINAL = {"completed", "cancelled", "failed"}
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class LegacyEmptyControl(StrictModel):
+    """Older guided sessions send an empty object for pause, resume and cancel."""
 
 
 class EnableInput(StrictModel):
@@ -555,12 +561,13 @@ def install(app, connect, now, model_url, auth_headers, mcp_request, validate_to
             return result
 
     @router.post("/{character_id}/awakening/{session_id}/pause")
-    def pause(character_id: int, session_id: str, payload: autonomy.ControlInput | None = None):
+    def pause(character_id: int, session_id: str, payload: ControlInput | LegacyEmptyControl | None = None):
         with connect() as db:
             enabled(db, character_id)
             row = db.execute("SELECT mode FROM awakening_sessions WHERE id=? AND character_id=?", (session_id, character_id)).fetchone()
             if row and row["mode"] == "free":
-                if payload is None: raise HTTPException(422, "自由活动控制需要请求 ID 和会话版本")
+                if not isinstance(payload, ControlInput):
+                    raise HTTPException(422, "自由活动控制需要请求 ID 和会话版本")
                 return free_service.control(db, character_id, session_id, "pause", payload)[0]
             item = active(db, session_id)
             if item["character_id"] != character_id or item["status"] not in ("ready", "awaiting_confirmation"):
@@ -569,12 +576,13 @@ def install(app, connect, now, model_url, auth_headers, mcp_request, validate_to
             return session(db, session_id)
 
     @router.post("/{character_id}/awakening/{session_id}/resume")
-    async def resume(character_id: int, session_id: str, payload: autonomy.ControlInput | None = None):
+    async def resume(character_id: int, session_id: str, payload: ControlInput | LegacyEmptyControl | None = None):
         with connect() as db:
             enabled(db, character_id)
             row = db.execute("SELECT mode FROM awakening_sessions WHERE id=? AND character_id=?", (session_id, character_id)).fetchone()
             if row and row["mode"] == "free":
-                if payload is None: raise HTTPException(422, "自由活动控制需要请求 ID 和会话版本")
+                if not isinstance(payload, ControlInput):
+                    raise HTTPException(422, "自由活动控制需要请求 ID 和会话版本")
                 result, should_kick = free_service.control(db, character_id, session_id, "resume", payload)
             else:
                 should_kick = False
@@ -590,12 +598,13 @@ def install(app, connect, now, model_url, auth_headers, mcp_request, validate_to
         return result
 
     @router.post("/{character_id}/awakening/{session_id}/cancel")
-    def cancel(character_id: int, session_id: str, payload: autonomy.ControlInput | None = None):
+    def cancel(character_id: int, session_id: str, payload: ControlInput | LegacyEmptyControl | None = None):
         with connect() as db:
             enabled(db, character_id)
             row = db.execute("SELECT mode FROM awakening_sessions WHERE id=? AND character_id=?", (session_id, character_id)).fetchone()
             if row and row["mode"] == "free":
-                if payload is None: raise HTTPException(422, "自由活动控制需要请求 ID 和会话版本")
+                if not isinstance(payload, ControlInput):
+                    raise HTTPException(422, "自由活动控制需要请求 ID 和会话版本")
                 return free_service.control(db, character_id, session_id, "cancel", payload)[0]
             item = session(db, session_id)
             if item["character_id"] != character_id:

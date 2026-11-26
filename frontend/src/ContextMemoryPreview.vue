@@ -6,7 +6,8 @@ const reasons:Record<string,string>={retained_budget_exhausted:'超出本轮记�
 <template>
   <section v-if="report" class="memory-preview" aria-label="Chronicle 实际带入与预算">
     <h3>Chronicle 实际带入与预算</h3>
-    <p v-if="report.budget">{{report.budget.usedTokens}} / {{report.budget.limitTokens}} 估算 token · {{report.budget.usedBlocks}} / {{report.budget.limitBlocks}} 块。不是供应商计费值；共享周期块只计一次。</p>
+    <p v-if="report.selectionDetails?.length" role="status">当前带入 {{report.selectionDetails.filter((item:any)=>item.included).length}} 项，共核对 {{report.selectionDetails.length}} 项。</p>
+    <details v-if="report.budget"><summary>查看上下文用量估算</summary><p>{{report.budget.usedTokens}} / {{report.budget.limitTokens}} 估算 token · {{report.budget.usedBlocks}} / {{report.budget.limitBlocks}} 块。不是供应商计费值；共享周期块只计一次。</p></details>
     <p v-if="report.reason">{{reasons[report.reason] || '当前通道未带入记忆。'}}</p>
     <p v-if="report.enabled && !report.selectionDetails?.length">本轮没有合资格的候选或常驻条目。</p>
     <article v-for="item in report.selectionDetails || []" :key="item.entryId">
@@ -22,5 +23,5 @@ const reasons:Record<string,string>={retained_budget_exhausted:'超出本轮记�
 .memory-preview{padding:16px;border:1px solid var(--ui-line);border-radius:12px;background:var(--ui-surface);color:var(--ui-ink)}
 .memory-preview article{padding:12px 0;border-top:1px solid var(--ui-line)}
 .memory-preview span,.memory-preview small{display:block;color:var(--ui-muted)}
-.memory-preview p{margin:6px 0;line-height:1.75}
+.memory-preview p{margin:6px 0;font-size:var(--ui-reading-size);line-height:var(--ui-reading-leading)}.memory-preview summary{cursor:pointer;color:var(--ui-accent);padding:6px 0}
 </style>

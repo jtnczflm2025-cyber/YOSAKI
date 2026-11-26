@@ -3,6 +3,7 @@ import json
 import uuid
 from . import memory_v2_entries as legacy, memory_v2_derivation as m3
 from . import memory_v2_metadata_contract as c
+from .memory_v2_read import validated_read
 
 
 def init_db(db):
@@ -56,11 +57,13 @@ def _entry(db, entry_id, character_id):
     return row
 
 
-def _times(db, refs, character_id):
+def _times(db, refs, character_id, file_cache=None):
     result = []
+    if file_cache is None:
+        file_cache = {}
     has_receipts = db.execute("SELECT 1 FROM sqlite_master WHERE name='mv2_import_receipts'").fetchone()
     for ordinal, ref in enumerate(refs):
-        source = m3.live_source(db, character_id, ref['source_kind'], ref['source_id'])
+        source = m3.live_source(db, character_id, ref['source_kind'], ref['source_id'], file_cache)
         receipt = db.execute('SELECT * FROM mv2_import_receipts WHERE message_id=?',
             (ref['source_id'],)).fetchone() if has_receipts and ref['source_kind'] == 'message' else None
         data = dict(receipt) if receipt else {}
@@ -77,15 +80,15 @@ def _set(db, entry):
         (entry['draft_version_id'], entry['id'])).fetchone()
 
 
-def _validate_sources(db, entry, version):
+def _validate_sources(db, entry, version, file_cache=None):
     if version is None:
         raise ValueError('version_missing')
     refs = json.loads(version['sources_json'])
     actual = m3.source_inputs(db, entry['character_id'],
-        [{'kind': r['source_kind'], 'id': r['source_id']} for r in refs])
+        [{'kind': r['source_kind'], 'id': r['source_id']} for r in refs], file_cache)
     if actual != refs or c.token(actual) != version['source_token']:
         raise ValueError('source_changed')
-    if _times(db, refs, entry['character_id']) != json.loads(version['time_evidence_json']):
+    if _times(db, refs, entry['character_id'], file_cache) != json.loads(version['time_evidence_json']):
         raise ValueError('time_evidence_changed')
     return refs
 
@@ -244,10 +247,12 @@ def _evidence(db, character_id, refs, evidence):
             raise ValueError('evidence_offset_invalid')
 
 
+@validated_read
 def read_draft(db, entry_id, character_id, *, offset_minutes=480):
     entry = _entry(db, entry_id, character_id); version = _set(db, entry)
-    refs = _validate_sources(db, entry, version)
-    live_times = _times(db, refs, character_id)
+    file_cache = {}
+    refs = _validate_sources(db, entry, version, file_cache)
+    live_times = _times(db, refs, character_id, file_cache)
     from .memory_v2_chronicle_dates import corrected
     live_times = corrected(db, entry, version, live_times)
     times = c.time_tokens(live_times, offset_minutes)
@@ -289,6 +294,13 @@ def read_draft(db, entry_id, character_id, *, offset_minutes=480):
                             state = 'stale'
                     except (ValueError,KeyError,TypeError):
                         state = 'stale'
+        if name=='tags' and field['rule_version']=='chronicle-import-topic-filing-v1':
+            from . import memory_v2_tags as tag_decisions
+            try:
+                if any(tag_decisions.merge_guard(db,character_id,entry_id,item['id']) for item in value or []):
+                    state='stale'
+            except (ValueError,KeyError,TypeError):
+                state='stale'
         if (name == 'keywords' and field['provenance'] == 'rule' and
                 field['rule_version'].startswith('keyword-literal-raw-') and
                 field['editor_id'] is not None):
@@ -325,20 +337,23 @@ def read_draft(db, entry_id, character_id, *, offset_minutes=480):
                         field['rule_version'] == final.PROFILE_V3
                         else synopsis._batch_validator(field['rule_version']))):
                 state = 'stale'
-        if name=='synopsis' and field['rule_version'] in ('synopsis-full-entry-responses-chronicle-quotes-v4','synopsis-full-entry-responses-chronicle-quotes-v4-stream-v1','synopsis-full-entry-responses-chronicle-quotes-v4-stream-8192-v2'):
+        import_plan = name=='synopsis' and field['rule_version'].startswith('chronicle-import-plan-synopsis-')
+        if import_plan or (name=='synopsis' and field['rule_version'] in ('synopsis-full-entry-responses-chronicle-quotes-v4','synopsis-full-entry-responses-chronicle-quotes-v4-stream-v1','synopsis-full-entry-responses-chronicle-quotes-v4-stream-8192-v2')):
             from . import memory_v2_synopsis_quotes as quotes
             from . import memory_v2_synopsis as synopsis
             try:
                 evidence=json.loads(field['evidence_json'])[0]
+                if import_plan and (field['rule_version']!='chronicle-import-plan-synopsis-v1' or field['provenance']!='model'):
+                    raise ValueError('import_profile_changed')
                 if field['rule_version']==synopsis.REAL_STREAM_8192_PROFILE and (deps.get('synopsisCapacityVersion')!=synopsis.STREAM_8192_CAPACITY_VERSION or evidence.get('capacityVersion')!=synopsis.STREAM_8192_CAPACITY_VERSION):
                     raise ValueError('capacity_version_changed')
                 sources=[]
                 for ref in refs:
-                    live=m3.live_source(db,character_id,ref['source_kind'],ref['source_id'])
+                    live=m3.live_source(db,character_id,ref['source_kind'],ref['source_id'],file_cache)
                     if live is None: raise ValueError('source_changed')
                     sources.append(dict(kind=live.kind,id=live.source_id,speaker=live.role,text=live.text,sourceStatus=live.status))
                 checked={'text':value,'units':evidence['units'],'sourceCoverage':evidence['sourceCoverage']}
-                if deps.get('synopsisQuoteLocator')!=quotes.VERSION:raise ValueError('quote_version_changed')
+                if not import_plan and deps.get('synopsisQuoteLocator')!=quotes.VERSION:raise ValueError('quote_version_changed')
                 quotes.checked_artifact(checked,evidence['quoteLocalization'],sources)
                 synopsis.validate_output(checked,sources,qualifier_policy=synopsis.CHRONICLE_REVIEW_POLICY)
                 synopsis.validate_speaker_anchors(checked)
@@ -488,8 +503,9 @@ def read_active(db, entry_id, character_id):
            for r in detail['timeEvidence']]
     basis='occurred' if dates and all(dates) else 'unknown'
     dates=sorted(dates) if basis=='occurred' else []
+    file_cache = {}
     recorded=sorted(s.recorded_at for r in detail['sourceRefs']
-        if (s:=m3.live_source(db,character_id,r['source_kind'],r['source_id'])).recorded_at)
+        if (s:=m3.live_source(db,character_id,r['source_kind'],r['source_id'],file_cache)).recorded_at)
     return {'entryId':entry_id,'versionId':detail['versionId'],'title':value('title'),
         'synopsis':value('synopsis'),'narrativeVersionId':value('narrative'),
         'keywords':[x['text'] for x in value('keywords',[])], 'tags':[],

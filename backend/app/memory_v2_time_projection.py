@@ -16,6 +16,7 @@ from . import memory_v2_derivation as m3
 from . import memory_v2_digest as digest
 from . import memory_v2_entries as entries
 from .memory_v2_context import estimate_tokens
+from .memory_v2_read import validated_read
 
 
 MAX_PAGE = 50
@@ -94,6 +95,7 @@ class Node:
     offset_minutes: int
 
 
+@validated_read
 def _members(db, character_id, now, offset_minutes):
     if not _table_exists(db, "mv3_entries"):
         return []
@@ -404,6 +406,7 @@ def bind_reviewed_digest(db, character_id, node_id, version_id, *, now, offset_m
     return {"digestVersionId": version_id, "nodeId": node.id, "scopeHash": node.scope_hash}
 
 
+@validated_read
 def browse(db, character_id, *, now, offset_minutes=480, levels=None, limit=20, cursor=None):
     """Read-only time tree roots; asOf is frozen across all cursor pages."""
     _checked_view(now, offset_minutes)

@@ -43,3 +43,24 @@ def suggest(sources):
 def evaluate(sources):
     result=suggest(sources)
     return dict(keywords=[dict(text=c['text'],language='und',kind='literal',weight=1,field='raw',evidence=c['evidence']) for c in result['candidates']],reasonCodes=[] if result['candidates'] else ['no_distinctive_literal_phrase'])
+
+
+def with_topics(sources, saved):
+    """Recheck stored topical phrases against their original source and offsets."""
+    from . import memory_v2_import_filing as filing
+    local = suggest(sources)
+    originals = {(s['kind'], s['id']): s['text'] for s in sources}
+    topics = []
+    for item in saved:
+        for ref in item.get('evidence', []):
+            raw = originals.get((ref['kind'], ref['id']))
+            start, end = ref['start'], ref['end']
+            if raw is not None and 0 <= start < end <= len(raw) and raw[start:end] == item['text']:
+                topics.append(dict(text=item['text'], evidence=[ref],
+                    reason='导入时按这段经历选出的主题词，已核对原话',
+                    context=raw[max(0,start-35):end+35]))
+                break
+    keys = {legacy.contract.normalized(c['text']) for c in topics}
+    extras = [c for c in local['candidates'] if legacy.contract.normalized(c['text']) not in keys]
+    return dict(local, candidates=(topics+extras)[:16], ruleVersion=filing.VERSION+' / '+VERSION,
+                limitation='优先展示有原文依据的导入主题词，其后是本地规则提取的候选。可以按检索习惯取舍。')

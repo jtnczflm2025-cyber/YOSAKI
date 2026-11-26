@@ -58,4 +58,9 @@
 @media(prefers-reduced-motion:reduce){.chronicle button,.chronicle summary::before{transition:none}}
 
 .chronicle button:not(.icon-btn){min-height:44px}
+.chronicle .time-guide{line-height:1.7;margin:10px 8px 16px}
+.chronicle .nav-period strong{font-size:14px;font-weight:600;line-height:1.7}
+.chronicle .child-card{grid-template-columns:minmax(0,1fr) auto}
+.chronicle .child-card small{grid-column:1}
+.chronicle .child-card svg{grid-column:2}
 @media(max-width:750px){.chronicle .chronicle-header{position:static}.chronicle .editor-section{scroll-margin-top:20px}}

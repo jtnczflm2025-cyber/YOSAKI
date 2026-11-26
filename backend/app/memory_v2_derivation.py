@@ -27,29 +27,46 @@ def _row(db, table, row_id):
     return dict(row) if row else None
 
 
-def live_source(db, character_id, kind, source_id):
+def live_source(db, character_id, kind, source_id, file_cache=None):
     """Only the active, current M1 generation may become an M3 input."""
     if kind not in memory_v2_sources.KINDS:
         return None
+    cache = memory_v2_read.source_cache(db)
+    key = (character_id, kind, source_id)
+    if cache is not None and key in cache:
+        live = cache[key]
+        # Message-path authorization is contextual, even without any database
+        # change. Recheck it on every use of a previously validated source.
+        from .chat_history import source_allowed, READ_SCOPE
+        if kind == 'message' and not source_allowed(db, int(source_id), int(live.stream_id)):
+            return None
+        if kind == 'activity_operation' and READ_SCOPE.get() is not None:
+            return None
+        return live
     meta = db.execute("SELECT active_generation,state FROM mv2_meta WHERE character_id=?", (character_id,)).fetchone()
     if meta is None or meta["state"] != "ready":
         return None
     indexed = db.execute("""SELECT * FROM mv2_sources WHERE character_id=? AND generation=?
         AND source_kind=? AND source_id=?""",
         (character_id, meta["active_generation"], kind, source_id)).fetchone()
-    return memory_v2_read.valid_source(db, indexed, character_id)
+    live = memory_v2_read.valid_source(db, indexed, character_id, file_cache)
+    if cache is not None and live is not None:
+        cache[key] = live
+    return live
 
 
-def source_inputs(db, character_id, refs):
+def source_inputs(db, character_id, refs, file_cache=None):
     if not refs or len(refs) > 500:
         raise ValueError("source_count_invalid")
     seen, items = set(), []
+    if file_cache is None:
+        file_cache = {}
     for ordinal, ref in enumerate(refs):
         kind, source_id = ref["kind"], str(ref["id"])
         if (kind, source_id) in seen:
             raise ValueError("duplicate_source")
         seen.add((kind, source_id))
-        live = live_source(db, character_id, kind, source_id)
+        live = live_source(db, character_id, kind, source_id, file_cache)
         if live is None:
             raise ValueError("source_missing_or_stale")
         items.append({"ordinal": ordinal, "source_kind": kind, "source_id": source_id,

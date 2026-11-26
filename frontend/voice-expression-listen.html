@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>YOSAKI 两位置表达试听</title>
+<link rel="stylesheet" href="/theme/tokens.css"><link rel="stylesheet" href="/theme/silver.css">
+<style>body{margin:0;background:var(--ui-bg);color:var(--ui-ink);font-family:var(--ui-font)}main{max-width:860px;margin:auto;padding:24px}p{font-size:17px;line-height:1.75}.card{padding:20px;margin:20px 0}audio{width:100%}h1{font-size:26px}h2{font-size:20px}#status{overflow-wrap:anywhere}@media(max-width:600px){main{padding:12px}.card{padding:12px}}</style></head>
+<body><main><h1>两位置表达 · 试听</h1><p>只播放已保存文件，不会重新生成。这是普通版与冻结标签候选的非盲听，每版仅一次生成；真实 AI 判断另行验证。</p>
+<section class="glass-surface glass-reading card"><div class="glass-content"><h2>普通版 · 35 字</h2><audio id="plain" controls preload="none" src="/audio/plain"></audio></div></section>
+<section class="glass-surface glass-reading card"><div class="glass-content"><h2>两位置候选 · 56 字</h2><p>第一段 thoughtful，第二段 sighs；作用范围和未标注句影响仍待听评，没有重置标签。</p><audio id="two_position_candidate" controls preload="none" src="/audio/two_position_candidate"></audio></div></section>
+<p id="status" role="status">可以播放、暂停或重播已有文件。</p></main>
+<script>for(const audio of document.querySelectorAll('audio')){for(const event of ['play','pause','ended','error'])audio.addEventListener(event,()=>{if(event==='play')for(const other of document.querySelectorAll('audio'))if(other!==audio)other.pause();document.getElementById('status').textContent=audio.id+'：'+event;fetch('/playback/'+audio.id+'/'+event,{method:'POST',credentials:'same-origin'}).catch(()=>{});});}</script>
+</body></html>

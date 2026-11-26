@@ -211,6 +211,8 @@ def install(app, connect, cursor_key_provider=None):
     @router.post("/index/jobs/{job_id}/pause")
     def pause(job_id: str, characterId: int):
         with connect() as db:
+            from .memory_v2_local_import_tasks import require_unmanaged_index
+            require_unmanaged_index(db,job_id,characterId)
             job_for(db, job_id, characterId)
             try:
                 return indexer.set_status(db, job_id, "paused")
@@ -220,6 +222,8 @@ def install(app, connect, cursor_key_provider=None):
     @router.post("/index/jobs/{job_id}/resume")
     def resume(job_id: str, characterId: int):
         with connect() as db:
+            from .memory_v2_local_import_tasks import require_unmanaged_index
+            require_unmanaged_index(db,job_id,characterId)
             job_for(db, job_id, characterId)
             try:
                 return indexer.set_status(db, job_id, "running")
@@ -230,6 +234,8 @@ def install(app, connect, cursor_key_provider=None):
     def step(job_id: str, characterId: int):
         try:
             with connect() as db:
+                from .memory_v2_local_import_tasks import require_unmanaged_index
+                require_unmanaged_index(db,job_id,characterId)
                 job_for(db, job_id, characterId)
                 return indexer.step_job(db, job_id)
         except ValueError as exc:

@@ -84,6 +84,13 @@ def query_terms(text):
 
 def verified_archive_file(db, file_id, cache=None):
     """Validate the whole completed H2 file, not just one receipt."""
+    if cache is not None:
+        # Reuse integrity checks only while this connection sees the same
+        # database state. Other connections and same-connection edits invalidate.
+        stamp = (id(db), db.total_changes, db.execute('PRAGMA data_version').fetchone()[0])
+        if cache.get('_database_state') != stamp:
+            cache.clear()
+            cache['_database_state'] = stamp
     if cache is not None and file_id in cache:
         return cache[file_id]
     file = db.execute("""SELECT f.*,b.character_id AS batch_character,b.total AS batch_total,
